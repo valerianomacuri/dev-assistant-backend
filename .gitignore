@@ -1,0 +1,29 @@
+# Variables de entorno (NUNCA commitear las API keys)
+.env
+
+# Base de datos de vectores (se genera con npm run ingest)
+data/vectors.db
+data/*.db
+
+# Dependencias de Node
+node_modules/
+
+# Build output
+dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Issues generados por el agente (demo)
+issues/
