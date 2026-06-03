@@ -4,6 +4,7 @@
 # Base de datos de vectores (se genera con npm run ingest)
 data/vectors.db
 data/*.db
+data/*.json
 
 # Dependencias de Node
 node_modules/
