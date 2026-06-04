@@ -1,4 +1,5 @@
 import { DevAssistantAgent } from "./agent.js";
+import { resetStore } from "../rag/retriever.js";
 
 // === Utilidades de presentación ===
 
@@ -215,7 +216,9 @@ async function runDemo(): Promise<void> {
 }
 
 // Entry point
-runDemo().catch((error: Error) => {
-  console.error("Error en la demo:", error.message);
-  process.exit(1);
-});
+runDemo()
+  .catch((error: Error) => {
+    console.error("Error en la demo:", error.message);
+    process.exitCode = 1;
+  })
+  .finally(() => resetStore());

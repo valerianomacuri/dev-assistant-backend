@@ -33,16 +33,11 @@ export const config: AppConfig = {
     "text-embedding-3-small",
   ),
   docsPath: getRequiredEnvVar("DOCS_PATH", "./docs/sample-project"),
-  dbPath: getRequiredEnvVar("DB_PATH", "./data/vectors.db"),
+  databaseUrl: getRequiredEnvVar(
+    "DATABASE_URL",
+    "postgresql://devassistant:devassistant@localhost:5432/devassistant",
+  ),
   ragTopK: parseInt(getRequiredEnvVar("RAG_TOP_K", "5"), 10),
 };
 
-export function validateConfig(): void {
-  if (config.provider === "anthropic" && !config.anthropicApiKey) {
-    throw new Error("ANTHROPIC_MODEL está vacía. Agregála en tu archivo .env");
-  }
-  if (config.provider === "openai" && !config.openaiApiKey) {
-    throw new Error("OPENAI_API_KEY está vacía. Agregála en tu archivo .env");
-  }
-}
 export default config;

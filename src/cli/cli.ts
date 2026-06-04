@@ -1,11 +1,10 @@
 import * as readline from "readline";
 import { processDirectory } from "../rag/chunker.js";
-import { generateEmbeddings } from "../rag/embeddings.js";
 import config from "../config.js";
 import { VectorStore } from "../rag/vector-store.js";
 import { resetStore } from "../rag/retriever.js";
 import { DevAssistantAgent } from "../agent/agent.js";
-import { ALL_TOOL_DEFINITIONS } from "../agent/tool-registry.js";
+import { TOOL_METADATA } from "../tools/index.js";
 import { checkGuardrails, createRateLimiter } from "../security/guardrails.js";
 import { calculateCost } from "../utils/cost-calculator.js";
 
@@ -20,22 +19,17 @@ async function ingestDocs(docsPath: string): Promise<void> {
   }
 
   console.log(`Generando embeddings para ${chunks.length} chunks...`);
-  const embeddings = await generateEmbeddings(chunks.map((c) => c.content));
 
-  const store = new VectorStore(config.dbPath);
-  store.clear();
+  const store = await VectorStore.create();
+  await store.clear();
+  await store.addChunks(chunks);
+  const size = await store.size();
+  await store.close();
 
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    const embedding = embeddings[i];
-    if (chunk && embedding) store.insert(chunk, embedding);
-  }
+  console.log(`${size} chunks almacenados en Postgres`);
 
-  console.log(`${store.size} chunks almacenados en ${config.dbPath}`);
-  store.close();
-
-  // Reiniciar el singleton
-  resetStore();
+  // Reiniciar el singleton del retriever
+  await resetStore();
   console.log("Vector store actualizado — listo para búsquedas\n");
 }
 
@@ -97,6 +91,7 @@ export async function startCLI(): Promise<void> {
             `${stats.outputTokens} tokens de salida ` +
             `${sessionCost.formatted} costo estimado `,
         );
+        await resetStore();
         rl.close();
         return;
       }
@@ -108,10 +103,9 @@ export async function startCLI(): Promise<void> {
       }
 
       if (userInput === "/tools") {
-        console.log(`\nTools disponibles (${ALL_TOOL_DEFINITIONS.length}):`);
-        for (const tool of ALL_TOOL_DEFINITIONS) {
-          const params = Object.keys(tool.input_schema.properties).join(", ");
-          console.log(`   • ${tool.name}(${params})`);
+        console.log(`\nTools disponibles (${TOOL_METADATA.length}):`);
+        for (const tool of TOOL_METADATA) {
+          console.log(`   • ${tool.name}(${tool.paramNames.join(", ")})`);
           const shortDescription =
             tool.description.split(".")[0] ?? tool.description;
           console.log(`     ${shortDescription}.`);

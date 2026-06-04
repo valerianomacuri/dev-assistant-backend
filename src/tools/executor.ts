@@ -50,7 +50,7 @@ async function collectFiles(
   return results;
 }
 
-async function executeListFiles(params: {
+export async function executeListFiles(params: {
   path: string;
   extension?: string;
 }): Promise<string> {
@@ -78,7 +78,9 @@ async function executeListFiles(params: {
   return relativePaths.join("\\n");
 }
 
-async function executeReadFile(params: { file_path: string }): Promise<string> {
+export async function executeReadFile(params: {
+  file_path: string;
+}): Promise<string> {
   const securePath = resolveSecurePath(params.file_path);
   if (!securePath) {
     return `Error de seguridad: la ruta "${params.file_path}" intenta acceder fuera del proyecto.`;
@@ -109,7 +111,7 @@ async function executeReadFile(params: { file_path: string }): Promise<string> {
   }
 }
 
-async function executeSearchCode(params: {
+export async function executeSearchCode(params: {
   pattern: string;
   path?: string;
   file_extension?: string;
@@ -169,48 +171,4 @@ async function executeSearchCode(params: {
       : `Coincidencias: ${totalMatches}`;
 
   return header + results.join("\n\n");
-}
-export async function executeTool(
-  name: string,
-  params: Record<string, unknown>,
-): Promise<string> {
-  switch (name) {
-    case "list_files": {
-      const p = params as { path?: unknown; extension?: unknown };
-      if (typeof p.path !== "string") {
-        return "Error: el parámetro 'path' es requerido y debe ser string.";
-      }
-      return executeListFiles({
-        path: p.path,
-        extension: typeof p.extension === "string" ? p.extension : undefined,
-      });
-    }
-
-    case "read_file": {
-      const p = params as { file_path?: unknown };
-      if (typeof p.file_path !== "string") {
-        return "Error: el parámetro 'file_path' es requerido y debe ser string.";
-      }
-      return executeReadFile({ file_path: p.file_path });
-    }
-
-    case "search_code": {
-      const p = params as {
-        pattern: unknown;
-        path?: unknown;
-        file_extension?: unknown;
-      };
-      if (typeof p.pattern !== "string") {
-        return "Error: el parámetro 'pattern' es requerido y debe ser string.";
-      }
-      return executeSearchCode({
-        pattern: p.pattern,
-        path: typeof p.path === "string" ? p.path : undefined,
-        file_extension:
-          typeof p.file_extension === "string" ? p.file_extension : undefined,
-      });
-    }
-    default:
-      return `Error: tool desconocida "${name}. Tools disponibles: list_files,read_file, search_code."`;
-  }
 }

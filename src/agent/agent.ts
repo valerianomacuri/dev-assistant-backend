@@ -1,19 +1,38 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { createAgent } from "langchain";
+import { MemorySaver, GraphRecursionError } from "@langchain/langgraph";
+import {
+  HumanMessage,
+  type AIMessageChunk,
+  type BaseMessage,
+  type ToolMessage,
+} from "@langchain/core/messages";
+import { chatModel, extractText } from "../llm/chat-model.js";
+import { ALL_TOOLS } from "../tools/index.js";
 import { AGENT_SYSTEM_PROMPT } from "./system-prompt.js";
 import { AgentResponse } from "../types.js";
-import { ALL_TOOL_DEFINITIONS, executeAnyTool } from "./tool-registry.js";
-import { client } from "../llm/anthropic-client.js";
-import config from "../config.js";
 
 const MAX_TOOL_CALLS = 8;
-export class DevAssistantAgent {
-  private messages: Anthropic.Messages.MessageParam[] = [];
-  private totalInputTokens: number = 0;
-  private totalOutputTokens: number = 0;
-  private turns: number = 0;
-  private toolCallsLastTurn: number = 0;
+// Cada ciclo agente→tools→agente consume ~2 supersteps en el grafo.
+const RECURSION_LIMIT = 2 * MAX_TOOL_CALLS + 1;
 
-  constructor(private readonly systemPrompt: string = AGENT_SYSTEM_PROMPT) {}
+export class DevAssistantAgent {
+  private readonly agent: ReturnType<typeof createAgent>;
+  private readonly checkpointer = new MemorySaver();
+  private threadCounter = 0;
+  private threadId = "session-0";
+  private totalInputTokens = 0;
+  private totalOutputTokens = 0;
+  private turns = 0;
+  private toolCallsLastTurn = 0;
+
+  constructor(private readonly systemPrompt: string = AGENT_SYSTEM_PROMPT) {
+    this.agent = createAgent({
+      model: chatModel,
+      tools: ALL_TOOLS,
+      systemPrompt: this.systemPrompt,
+      checkpointer: this.checkpointer,
+    });
+  }
 
   async chat(
     userMessage: string,
@@ -24,180 +43,85 @@ export class DevAssistantAgent {
     const toolsUsed: string[] = [];
     let inputTokensThisTurn = 0;
     let outputTokensThisTurn = 0;
+    let finalText = "";
 
-    this.messages.push({ role: "user", content: userMessage });
     console.log(`\nAgente procesando turno ${this.turns}...`);
-    const sdkTools = ALL_TOOL_DEFINITIONS as Anthropic.Messages.Tool[];
-    while (this.toolCallsLastTurn < MAX_TOOL_CALLS) {
-      const response = await client.messages.create({
-        model: config.anthropicModel,
-        max_tokens: 4096,
-        system: this.systemPrompt,
-        tools: sdkTools,
-        messages: this.messages,
-      });
-      inputTokensThisTurn += response.usage.input_tokens;
-      outputTokensThisTurn += response.usage.output_tokens;
-      this.totalInputTokens += response.usage.input_tokens;
-      this.totalOutputTokens += response.usage.output_tokens;
-      if (response.stop_reason === "end_turn") {
-        const finalText = response.content
-          .filter(
-            (block): block is Anthropic.Messages.TextBlock =>
-              block.type === "text",
-          )
-          .map((block) => block.text)
-          .join("\n");
-        if (onChunk) {
-          const stream = await client.messages.stream({
-            model: config.anthropicModel,
-            max_tokens: 4096,
-            system: this.systemPrompt,
-            tools: sdkTools,
-            messages: this.messages,
-          });
-          let streamedText = "";
-          for await (const event of stream) {
-            if (
-              event.type === "content_block_delta" &&
-              event.delta.type === "text_delta"
-            ) {
-              onChunk(event.delta.text);
-              streamedText += event.delta.text;
-            }
-          }
-          this.messages.push({
-            role: "assistant",
-            content: streamedText || finalText,
-          });
-          console.log("Respuesta final generada\n");
-          return {
-            text: streamedText || finalText,
-            toolsUsed,
-            inputTokens: inputTokensThisTurn,
-            outputTokens: outputTokensThisTurn,
-          };
-        } else {
-          this.messages.push({
-            role: "assistant",
-            content: finalText,
-          });
-          console.log("Respuesta final generada\n");
-          return {
-            text: finalText,
-            toolsUsed,
-            inputTokens: inputTokensThisTurn,
-            outputTokens: outputTokensThisTurn,
-          };
-        }
-      }
-      if (response.stop_reason === "tool_use") {
-        const toolUseBlocks = response.content.filter(
-          (block): block is Anthropic.Messages.ToolUseBlock =>
-            block.type === "tool_use",
-        );
-        if (this.toolCallsLastTurn + toolUseBlocks.length > MAX_TOOL_CALLS) {
-          console.warn(
-            `Límite de ${MAX_TOOL_CALLS} tool calls alcanzado en este turno`,
-          );
-          const limitMessage =
-            `He alcanzado el límite de ${MAX_TOOL_CALLS} llamadas a herramientas por turno. ` +
-            `Para completar esta tarea, intenta dividirla en preguntas más específicas.`;
 
-          this.messages.push({
-            role: "assistant",
-            content: limitMessage,
-          });
-
-          return {
-            text: limitMessage,
-            toolsUsed,
-            inputTokens: inputTokensThisTurn,
-            outputTokens: outputTokensThisTurn,
-          };
-        }
-        this.messages.push({
-          role: "assistant",
-          content: response.content,
-        });
-
-        const results = await Promise.all(
-          toolUseBlocks.map(async (block) => {
-            this.toolCallsLastTurn++;
-            const toolNum = this.toolCallsLastTurn;
-            console.log(
-              `Ejecutando tool: ${block.name} (${JSON.stringify(block.input)} [${toolNum}/${MAX_TOOL_CALLS}])`,
-            );
-            const toolOutput = await executeAnyTool(
-              block.name,
-              block.input as Record<string, unknown>,
-            );
-            console.log(`Herramienta completada: ${block.name}`);
-            toolsUsed.push(block.name);
-            return toolOutput;
-          }),
-        );
-        const toolResultContent: Anthropic.Messages.ToolResultBlockParam[] =
-          toolUseBlocks.map((block, i) => ({
-            type: "tool_result" as const,
-            tool_use_id: block.id,
-            content: results[i] ?? "Error: resultado vacío",
-          }));
-        this.messages.push({
-          role: "user",
-          content: toolResultContent,
-        });
-        continue;
-      }
-      console.warn(
-        `Stop reason inesperado: ${response.stop_reason ?? "desconocido"}`,
+    try {
+      const stream = await this.agent.stream(
+        { messages: [new HumanMessage(userMessage)] },
+        {
+          configurable: { thread_id: this.threadId },
+          recursionLimit: RECURSION_LIMIT,
+          streamMode: "messages",
+        },
       );
-      const unexpectedText = response.content
-        .filter(
-          (block): block is Anthropic.Messages.TextBlock =>
-            block.type === "text",
-        )
-        .map((block) => block.text)
-        .join("\n");
-      const unexpectedMessage =
-        unexpectedText ||
-        `Sesión terminada inesperadamente: ${response.stop_reason ?? "razón desconocida"}`;
-      this.messages.push({
-        role: "assistant",
-        content: unexpectedMessage,
-      });
-      return {
-        text: unexpectedMessage,
-        toolsUsed,
-        inputTokens: inputTokensThisTurn,
-        outputTokens: outputTokensThisTurn,
-      };
-    }
-    console.warn(
-      `Límite de ${MAX_TOOL_CALLS} tool calls alcanzado en este turno`,
-    );
-    const limitMessage =
-      `He alcanzado el límite de ${MAX_TOOL_CALLS} llamadas a herramientas por turno. ` +
-      `Para completar esta tarea, intenta dividirla en preguntas más específicas.`;
 
-    this.messages.push({
-      role: "assistant",
-      content: limitMessage,
-    });
+      for await (const event of stream) {
+        const [message] = event as [BaseMessage, Record<string, unknown>];
+        const type = message.getType();
+
+        if (type === "ai") {
+          const usage = (message as AIMessageChunk).usage_metadata;
+          if (usage) {
+            inputTokensThisTurn += usage.input_tokens ?? 0;
+            outputTokensThisTurn += usage.output_tokens ?? 0;
+          }
+          const text = extractText(message.content);
+          if (text) {
+            onChunk?.(text);
+            finalText += text;
+          }
+        } else if (type === "tool") {
+          this.toolCallsLastTurn++;
+          const name = (message as ToolMessage).name ?? "desconocida";
+          toolsUsed.push(name);
+          console.log(
+            `Herramienta ejecutada: ${name} [${this.toolCallsLastTurn}]`,
+          );
+        }
+      }
+    } catch (error) {
+      if (error instanceof GraphRecursionError) {
+        console.warn(
+          `Límite de ${MAX_TOOL_CALLS} tool calls alcanzado en este turno`,
+        );
+        const limitMessage =
+          `He alcanzado el límite de ${MAX_TOOL_CALLS} llamadas a herramientas por turno. ` +
+          `Para completar esta tarea, intenta dividirla en preguntas más específicas.`;
+        this.totalInputTokens += inputTokensThisTurn;
+        this.totalOutputTokens += outputTokensThisTurn;
+        return {
+          text: limitMessage,
+          toolsUsed,
+          inputTokens: inputTokensThisTurn,
+          outputTokens: outputTokensThisTurn,
+        };
+      }
+      throw error;
+    }
+
+    this.totalInputTokens += inputTokensThisTurn;
+    this.totalOutputTokens += outputTokensThisTurn;
+    console.log("Respuesta final generada\n");
 
     return {
-      text: limitMessage,
+      text: finalText,
       toolsUsed,
       inputTokens: inputTokensThisTurn,
       outputTokens: outputTokensThisTurn,
     };
   }
+
   clearHistory(): void {
-    this.messages = [];
+    // Nuevo thread_id => el checkpointer arranca un historial limpio.
+    this.threadCounter++;
+    this.threadId = `session-${this.threadCounter}`;
     this.turns = 0;
     this.toolCallsLastTurn = 0;
     console.log("Historial del agente limpiado");
   }
+
   getStats(): {
     inputTokens: number;
     outputTokens: number;

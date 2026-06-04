@@ -1,23 +1,11 @@
-import OpenAI from "openai";
+import { OpenAIEmbeddings } from "@langchain/openai";
 import config from "../config.js";
 
-const openaiClient = new OpenAI({
+/**
+ * Instancia compartida de embeddings (LangChain OpenAIEmbeddings).
+ * La usa tanto el PGVectorStore como las funciones helper de abajo.
+ */
+export const embeddings = new OpenAIEmbeddings({
+  model: config.openaiEmbeddingModel,
   apiKey: config.openaiApiKey,
 });
-
-export async function generateEmbedding(text: string): Promise<number[]> {
-  const response = await openaiClient.embeddings.create({
-    model: config.openaiEmbeddingModel,
-    input: text,
-  });
-  const embedding = response.data[0]?.embedding ?? [];
-  return embedding;
-}
-
-export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
-  const response = await openaiClient.embeddings.create({
-    model: config.openaiEmbeddingModel,
-    input: texts,
-  });
-  return response.data.map((item) => item.embedding);
-}

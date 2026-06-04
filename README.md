@@ -2,14 +2,14 @@
 
 > Agente inteligente de documentación técnica con RAG, Function Calling y Claude API.
 
-DevAssistant es una CLI conversacional que combina **Retrieval Augmented Generation (RAG)** con un **agente autónomo** basado en Claude de Anthropic. Utiliza **OpenAI `text-embedding-3-small`** para generar los embeddings del pipeline RAG, y **Claude (Anthropic)** como LLM del agente conversacional. Permite cargar tu documentación técnica en una base de datos vectorial y responder preguntas sobre ella con citas precisas a las fuentes, además de explorar y buscar código de forma autónoma mediante herramientas.
+DevAssistant es una CLI conversacional que combina **Retrieval Augmented Generation (RAG)** con un **agente autónomo** construido sobre **LangChain** y **LangGraph**. Utiliza **OpenAI `text-embedding-3-small`** para generar los embeddings del pipeline RAG, y **Claude (Anthropic)** vía `ChatAnthropic` de LangChain como LLM del agente conversacional. Los vectores se almacenan en **Postgres + pgvector**. Permite cargar tu documentación técnica en la base de datos vectorial y responder preguntas sobre ella con citas precisas a las fuentes, además de explorar y buscar código de forma autónoma mediante herramientas.
 
 ---
 
 ## Características
 
-- **RAG sobre documentación Markdown** — indexa archivos `.md` en un vector store local (SQLite + sqlite-vec) y responde citando fuentes exactas.
-- **Agente autónomo** — loop agentic con hasta 8 tool calls por turno: lista archivos, lee código y busca patrones en el codebase.
+- **RAG sobre documentación Markdown** — indexa archivos `.md` en **Postgres + pgvector** (vía `PGVectorStore` de LangChain) y responde citando fuentes exactas.
+- **Agente autónomo** — grafo ReAct con **LangGraph** (`createAgent`), hasta 8 tool calls por turno: lista archivos, lee código, busca patrones, consulta los docs y crea issues.
 - **Streaming de respuestas** — output en tiempo real directamente en la terminal.
 - **Guardrails de seguridad** — detección de prompt injection (inglés y español), sanitización de entradas y rate limiting configurable.
 - **Calculadora de costos** — estima el costo USD de cada sesión según el modelo y los tokens consumidos.
@@ -43,7 +43,8 @@ DevAssistant es una CLI conversacional que combina **Retrieval Augmented Generat
 | Herramienta                    | Versión mínima |
 | ------------------------------ | -------------- |
 | Node.js                        | 18+            |
-| npm                            | 9+             |
+| pnpm                           | 9+             |
+| Docker + Docker Compose        | —              |
 | API Key de Anthropic           | —              |
 | API Key de OpenAI (embeddings) | —              |
 
@@ -57,7 +58,10 @@ git clone https://github.com/DevTalles-corp/node-dev-assistant
 cd dev-assistant
 
 # 2. Instala las dependencias
-npm install
+pnpm install
+
+# 3. Levanta Postgres + pgvector (Docker)
+docker compose up -d
 ```
 
 ---
@@ -87,9 +91,11 @@ OPENAI_EMBEDDING_MODEL=text-embedding-3-small
 
 # RAG
 DOCS_PATH=./docs/sample-project   # directorio con tus archivos .md
-DB_PATH=./data/vectors.db         # ruta del vector store
+DATABASE_URL=postgresql://devassistant:devassistant@localhost:5432/devassistant  # Postgres + pgvector
 RAG_TOP_K=5                       # chunks a recuperar por búsqueda
 ```
+
+> **Nota:** El `DATABASE_URL` por defecto coincide con las credenciales del `docker-compose.yml`. La tabla `chunks` y la extensión `pgvector` se crean automáticamente en la primera ingestión.
 
 > **Nota:** Nunca hagas commit del archivo `.env`. Está incluido en `.gitignore`.
 
@@ -102,9 +108,9 @@ RAG_TOP_K=5                       # chunks a recuperar por búsqueda
 Inicia la CLI interactiva con el agente completo:
 
 ```bash
-npm run dev
+pnpm dev
 # o
-npm start
+pnpm start
 ```
 
 ### Ingestión de documentación
@@ -112,7 +118,7 @@ npm start
 Indexa los archivos Markdown de tu proyecto para habilitar el RAG:
 
 ```bash
-npm run ingest
+pnpm ingest
 # o desde la CLI:
 /ingest ./docs/mi-proyecto
 ```
@@ -122,7 +128,7 @@ npm run ingest
 Ejecuta el flujo de demostración sin la interfaz interactiva:
 
 ```bash
-npm run demo
+pnpm demo
 ```
 
 ### Revisor de código
@@ -130,7 +136,7 @@ npm run demo
 Ejecuta el ejercicio de code review:
 
 ```bash
-npm run review
+pnpm review
 ```
 
 ---
@@ -164,37 +170,39 @@ Usuario (CLI)
      │                            │  • Sanitización       │
      ▼                            └──────────────────────┘
 ┌─────────────────┐
-│ DevAssistantAgent│   agentic loop (max 8 tool calls/turno)
+│ DevAssistantAgent│   grafo ReAct LangGraph (max 8 tool calls/turno)
 │   agent.ts       │◄────────────────────────────────────┐
 └─────────────────┘                                      │
      │  streaming                                        │
      ▼                                              tool results
-┌──────────────────┐     tool_use     ┌─────────────────┐
-│  Claude API      │ ───────────────► │  Tool Executor  │
-│  (Anthropic SDK) │                  │  • list_files   │
+┌──────────────────┐     tool_calls   ┌─────────────────┐
+│  ChatAnthropic   │ ───────────────► │  Tools (zod)    │
+│  (LangChain)     │                  │  • list_files   │
 └──────────────────┘                  │  • read_file    │
                                       │  • search_code  │
+                                      │  • search_docs  │
+                                      │  • create_issue │
                                       └─────────────────┘
 
 RAG Pipeline (modo /ingest + consulta directa)
-  Markdown files → Chunker → Embeddings (OpenAI text-embedding-3-small) → VectorStore (SQLite)
-                                                                                │
-  User question → Embeddings (OpenAI text-embedding-3-small) → Retriever ──────┘
+  Markdown files → Chunker → PGVectorStore (LangChain) → Postgres + pgvector
+                                  │ embeddings: OpenAI text-embedding-3-small
+  User question → PGVectorStore.similaritySearch ──────┘
                                                                     │
-                                               Context → Claude (Anthropic) → Respuesta con fuentes
+                                               Context → ChatAnthropic → Respuesta con fuentes
 ```
 
 ### Flujo RAG
 
-1. **Ingestión:** los archivos `.md` se dividen en chunks por encabezados (`chunker.ts`), se generan embeddings con **OpenAI `text-embedding-3-small`** y se almacenan en SQLite con `sqlite-vec`.
-2. **Consulta:** la pregunta del usuario se embebe también con **OpenAI `text-embedding-3-small`**, se recuperan los `TOP_K` chunks más similares y se construye un prompt aumentado que **Claude (Anthropic)** usa para responder citando fuentes.
+1. **Ingestión:** los archivos `.md` se dividen en chunks por encabezados (`chunker.ts`) y se cargan en **Postgres + pgvector** mediante `PGVectorStore` de LangChain, que genera los embeddings con **OpenAI `text-embedding-3-small`** internamente.
+2. **Consulta:** `PGVectorStore.similaritySearch` embebe la pregunta, recupera los `TOP_K` chunks más similares (distancia coseno) y se construye un prompt aumentado que **ChatAnthropic** usa para responder citando fuentes.
 
 ### Flujo Agente
 
 1. El usuario envía un mensaje; los guardrails lo validan y sanitizan.
-2. El agente llama a Claude con las tools definidas.
-3. Si Claude responde con `tool_use`, el executor invoca la herramienta y devuelve el resultado.
-4. El ciclo se repite hasta `end_turn` o el límite de 8 tool calls.
+2. El grafo ReAct de **LangGraph** (`createAgent`) invoca a `ChatAnthropic` con las tools (definidas con `tool()` + zod).
+3. Si el modelo emite `tool_calls`, el `ToolNode` de LangGraph ejecuta la herramienta y devuelve el resultado.
+4. El ciclo se repite hasta la respuesta final o el límite de 8 tool calls (`recursionLimit`). El historial se persiste con `MemorySaver`.
 
 ---
 
@@ -207,31 +215,31 @@ dev-assistant/
 │   ├── config.ts                 # Configuración desde variables de entorno
 │   ├── types.ts                  # Tipos TypeScript compartidos
 │   ├── agent/
-│   │   ├── agent.ts              # DevAssistantAgent — agentic loop
+│   │   ├── agent.ts              # DevAssistantAgent — grafo ReAct (LangGraph)
 │   │   ├── demo.ts               # Script de demostración
-│   │   ├── system-prompt.ts      # System prompt del agente
-│   │   └── tool-registry.ts      # Registro de todas las tools
-│   ├── chat/
+│   │   └── system-prompt.ts      # System prompt del agente
+│   ├── cli/
 │   │   ├── cli.ts                # CLI interactiva
 │   │   └── conversation.ts       # Manejo de historial de conversación
 │   ├── llm/
-│   │   ├── anthropic-client.ts   # Cliente Anthropic SDK
+│   │   ├── chat-model.ts         # ChatAnthropic compartido (LangChain)
 │   │   ├── prompts.ts            # Prompts reutilizables
 │   │   └── streaming.ts          # Helpers de streaming
 │   ├── rag/
 │   │   ├── chunker.ts            # División de documentos en chunks
-│   │   ├── embeddings.ts         # Generación de embeddings (OpenAI)
+│   │   ├── embeddings.ts         # OpenAIEmbeddings (LangChain)
 │   │   ├── ingest.ts             # Script de ingestión standalone
 │   │   ├── rag-chain.ts          # Cadena RAG completa
 │   │   ├── retriever.ts          # Búsqueda por similitud vectorial
-│   │   └── vector-store.ts       # CRUD sobre SQLite + sqlite-vec
+│   │   └── vector-store.ts       # PGVectorStore sobre Postgres + pgvector
 │   ├── security/
-│   │   ├── guardrails.ts         # Prompt injection, rate limit, sanitización
-│   │   └── examples.ts           # Ejemplos de patrones bloqueados
+│   │   └── guardrails.ts         # Prompt injection, rate limit, sanitización
 │   ├── tools/
-│   │   ├── definitions.ts        # Esquemas JSON de las tools
-│   │   ├── executor.ts           # Ejecución de tools
-│   │   └── agent-loop.ts         # Loop agentic standalone
+│   │   ├── file-tools.ts         # Tools list_files / read_file / search_code
+│   │   ├── docs-tool.ts          # Tool search_docs (RAG)
+│   │   ├── issue-tool.ts         # Tool create_issue
+│   │   ├── executor.ts           # Lógica de filesystem reusada
+│   │   └── index.ts              # ALL_TOOLS + metadata para /tools
 │   ├── exercises/
 │   │   └── code-reviewer.ts      # Ejercicio: revisor de código con Claude
 │   └── utils/
@@ -241,8 +249,7 @@ dev-assistant/
 │       ├── README.md
 │       ├── api-reference.md
 │       └── getting-started.md
-├── data/
-│   └── vectors.db                # Vector store (generado en runtime)
+├── docker-compose.yml            # Postgres + pgvector
 ├── .env.template                 # Plantilla de variables de entorno
 ├── package.json
 └── tsconfig.json

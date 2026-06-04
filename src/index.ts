@@ -1,4 +1,4 @@
-import { startCLI } from "./chat/cli.js";
+import { startCLI } from "./cli/cli.js";
 
 startCLI().catch((error: Error) => {
   console.error(" Error: ", error.message);

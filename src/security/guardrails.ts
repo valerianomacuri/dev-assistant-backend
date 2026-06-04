@@ -106,7 +106,7 @@ const INJECTION_PATTERNS: Array<{ name: string; regex: RegExp }> = [
     regex: /sin\s+(ninguna\s+)?(restricci[oó]n|l[ií]mite|instrucci[oó]n)/i,
   },
 ];
-export function sanitizeInput(input: string): string {
+function sanitizeInput(input: string): string {
   const MAX_LENGTH = 8_000;
   let result = input
     .replace(/\0/g, "") // Null bytes eliminados
@@ -119,7 +119,7 @@ export function sanitizeInput(input: string): string {
   }
   return result;
 }
-export function detectPromptInjection(input: string): {
+function detectPromptInjection(input: string): {
   detected: boolean;
   pattern?: string;
 } {
