@@ -1,256 +1,140 @@
-# DevAssistant
+# DevAssistant API
 
-> Agente inteligente de documentación técnica con RAG, Function Calling y Claude API.
+> API REST multi-usuario con RAG por usuario, autenticación JWT, subida de archivos a S3 y respuestas en streaming.
 
-DevAssistant es una CLI conversacional que combina **Retrieval Augmented Generation (RAG)** con un **agente autónomo** construido sobre **LangChain** y **LangGraph**. Utiliza **OpenAI `text-embedding-3-small`** para generar los embeddings del pipeline RAG, y **Claude (Anthropic)** vía `ChatAnthropic` de LangChain como LLM del agente conversacional. Los vectores se almacenan en **Postgres + pgvector**. Permite cargar tu documentación técnica en la base de datos vectorial y responder preguntas sobre ella con citas precisas a las fuentes, además de explorar y buscar código de forma autónoma mediante herramientas.
+DevAssistant es una API construida con **NestJS** que combina **Retrieval Augmented Generation (RAG)** con un **agente autónomo** sobre **LangChain** y **LangGraph**. Cada usuario tiene su propia **conversación** y su propia **base de conocimiento**: sube archivos (Markdown, texto o PDF) que se almacenan en **S3** (MinIO en desarrollo) y se ingestan en **Postgres + pgvector**. El agente responde por **SSE** citando exclusivamente la documentación del usuario. Embeddings con **OpenAI `text-embedding-3-small`**; LLM del agente con **Claude (Anthropic)**.
 
 ---
 
 ## Características
 
-- **RAG sobre documentación Markdown** — indexa archivos `.md` en **Postgres + pgvector** (vía `PGVectorStore` de LangChain) y responde citando fuentes exactas.
-- **Agente autónomo** — grafo ReAct con **LangGraph** (`createAgent`), hasta 8 tool calls por turno: lista archivos, lee código, busca patrones, consulta los docs y crea issues.
-- **Streaming de respuestas** — output en tiempo real directamente en la terminal.
-- **Guardrails de seguridad** — detección de prompt injection (inglés y español), sanitización de entradas y rate limiting configurable.
-- **Calculadora de costos** — estima el costo USD de cada sesión según el modelo y los tokens consumidos.
-- **Embeddings con OpenAI** — el pipeline RAG usa `text-embedding-3-small` de OpenAI para indexación y búsqueda por similitud vectorial. El agente conversacional usa exclusivamente Claude (Anthropic).
-
----
-
-## Tabla de contenidos
-
-- [DevAssistant](#devassistant)
-  - [Características](#características)
-  - [Tabla de contenidos](#tabla-de-contenidos)
-  - [Requisitos previos](#requisitos-previos)
-  - [Instalación](#instalación)
-  - [Configuración](#configuración)
-  - [Uso](#uso)
-    - [Modo agente (recomendado)](#modo-agente-recomendado)
-    - [Ingestión de documentación](#ingestión-de-documentación)
-    - [Demo del agente](#demo-del-agente)
-    - [Revisor de código](#revisor-de-código)
-  - [Comandos disponibles](#comandos-disponibles)
-  - [Arquitectura](#arquitectura)
-    - [Flujo RAG](#flujo-rag)
-    - [Flujo Agente](#flujo-agente)
-  - [Estructura del proyecto](#estructura-del-proyecto)
+- **Multi-tenant** — cada usuario tiene su conversación aislada (`conv-<userId>`) y su RAG aislado (chunks filtrados por `userId`).
+- **Autenticación JWT** — registro/login con email y password (hash con bcrypt), Passport (`local` + `jwt`).
+- **Base de conocimiento por usuario** — sube `.md`, `.txt` o `.pdf`; se guardan en S3 y se ingestan (chunk + embeddings) de forma síncrona.
+- **Streaming SSE** — la respuesta del agente se emite en tiempo real (`text/event-stream`).
+- **Agente autónomo** — grafo ReAct con LangGraph (`createAgent`), tool `search_docs` sobre la documentación del usuario, hasta 8 tool calls por turno.
+- **Guardrails** — detección de prompt injection (ES/EN), sanitización y rate limiting por usuario.
 
 ---
 
 ## Requisitos previos
 
-| Herramienta                    | Versión mínima |
-| ------------------------------ | -------------- |
-| Node.js                        | 18+            |
-| pnpm                           | 9+             |
-| Docker + Docker Compose        | —              |
-| API Key de Anthropic           | —              |
-| API Key de OpenAI (embeddings) | —              |
+| Herramienta             | Versión mínima |
+| ----------------------- | -------------- |
+| Node.js                 | 18+            |
+| pnpm                    | 9+             |
+| Docker + Docker Compose | —              |
+| API Key de Anthropic    | —              |
+| API Key de OpenAI       | —              |
 
 ---
 
 ## Instalación
 
 ```bash
-# 1. Clona el repositorio
-git clone https://github.com/DevTalles-corp/node-dev-assistant
-cd dev-assistant
-
-# 2. Instala las dependencias
 pnpm install
 
-# 3. Levanta Postgres + pgvector (Docker)
+# Levanta Postgres + pgvector y MinIO (S3) + crea el bucket
 docker compose up -d
 ```
 
----
-
 ## Configuración
 
-Copia el archivo de variables de entorno y completa tus credenciales:
+```bash
+cp .env.template .env   # completa ANTHROPIC_API_KEY, OPENAI_API_KEY y JWT_SECRET
+```
+
+Variables relevantes (ver `.env.template` para la lista completa): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `JWT_SECRET`, `DATABASE_URL`, y el bloque `S3_*` (los valores por defecto apuntan al MinIO del `docker-compose.yml`).
+
+> Las tablas (`users`, `documents`) las crea TypeORM con `synchronize: true` (solo dev). La tabla `chunks` (pgvector) y las de checkpoints de LangGraph se crean automáticamente al arrancar.
+
+## Ejecución
 
 ```bash
-cp .env.template .env
+pnpm start:dev   # desarrollo con watch
+pnpm start       # desarrollo
+pnpm build && pnpm start:prod   # producción
 ```
 
-Edita `.env` con tus valores:
-
-```env
-# API Keys
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-
-# Proveedor de LLM: anthropic | openai
-MODEL_PROVIDER=anthropic
-
-# Modelos
-ANTHROPIC_MODEL=claude-sonnet-4-6
-OPENAI_MODEL=gpt-4o-mini
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-
-# RAG
-DOCS_PATH=./docs/sample-project   # directorio con tus archivos .md
-DATABASE_URL=postgresql://devassistant:devassistant@localhost:5432/devassistant  # Postgres + pgvector
-RAG_TOP_K=5                       # chunks a recuperar por búsqueda
-```
-
-> **Nota:** El `DATABASE_URL` por defecto coincide con las credenciales del `docker-compose.yml`. La tabla `chunks` y la extensión `pgvector` se crean automáticamente en la primera ingestión.
-
-> **Nota:** Nunca hagas commit del archivo `.env`. Está incluido en `.gitignore`.
+La API queda en `http://localhost:3000`. MinIO expone su consola en `http://localhost:9001` (usuario/clave `minioadmin`).
 
 ---
 
-## Uso
+## Endpoints
 
-### Modo agente (recomendado)
+| Método     | Ruta             | Auth   | Descripción                                                       |
+| ---------- | ---------------- | ------ | ----------------------------------------------------------------- |
+| `POST`     | `/auth/register` | —      | `{ email, password }` → `{ accessToken }`                         |
+| `POST`     | `/auth/login`    | —      | `{ email, password }` → `{ accessToken }`                         |
+| `GET`      | `/chat/stream`   | JWT    | `?message=...` → **SSE** con la respuesta del agente              |
+| `DELETE`   | `/chat`          | JWT    | Limpia la conversación del usuario                                |
+| `POST`     | `/documents`     | JWT    | `multipart/form-data` campo `file` → sube a S3 e ingesta en RAG   |
+| `GET`      | `/documents`     | JWT    | Lista los documentos del usuario                                  |
+| `DELETE`   | `/documents/:id` | JWT    | Borra el documento de S3 y sus chunks del RAG                     |
 
-Inicia la CLI interactiva con el agente completo:
+El token JWT se envía en `Authorization: Bearer <token>` o, para SSE/`EventSource` (que no admite headers personalizados), como query param `?token=<token>`.
 
-```bash
-pnpm dev
-# o
-pnpm start
-```
-
-### Ingestión de documentación
-
-Indexa los archivos Markdown de tu proyecto para habilitar el RAG:
-
-```bash
-pnpm ingest
-# o desde la CLI:
-/ingest ./docs/mi-proyecto
-```
-
-### Demo del agente
-
-Ejecuta el flujo de demostración sin la interfaz interactiva:
+### Ejemplo rápido
 
 ```bash
-pnpm demo
+B=http://localhost:3000
+
+# 1. Registro → token
+TOKEN=$(curl -s -X POST $B/auth/register -H 'Content-Type: application/json' \
+  -d '{"email":"yo@test.com","password":"password123"}' | jq -r .accessToken)
+
+# 2. Subir un documento a mi base de conocimiento
+curl -X POST $B/documents -H "Authorization: Bearer $TOKEN" \
+  -F "file=@./mi-doc.md;type=text/markdown"
+
+# 3. Preguntar (streaming SSE)
+curl -N "$B/chat/stream?token=$TOKEN&message=¿De%20qué%20trata%20mi%20documento?"
 ```
 
-### Revisor de código
-
-Ejecuta el ejercicio de code review:
-
-```bash
-pnpm review
-```
-
----
-
-## Comandos disponibles
-
-Dentro de la CLI interactiva puedes usar estos comandos:
-
-| Comando          | Descripción                                                                      |
-| ---------------- | -------------------------------------------------------------------------------- |
-| `/ingest [path]` | Indexa los archivos `.md` del directorio indicado (por defecto usa `DOCS_PATH`). |
-| `/stats`         | Muestra tokens consumidos, turnos y costo estimado de la sesión.                 |
-| `/tools`         | Lista las herramientas disponibles para el agente con su firma y descripción.    |
-| `/clear`         | Reinicia el historial de conversación del agente.                                |
-| `/exit`          | Termina la sesión y muestra el resumen final.                                    |
-
-Cualquier otro texto es enviado directamente al agente.
+Eventos SSE emitidos: `token` (fragmentos de texto), `done` (metadata: `toolsUsed`, tokens), `error`.
 
 ---
 
 ## Arquitectura
 
 ```
-Usuario (CLI)
-     │
-     ▼
-┌─────────────┐    guardrails     ┌──────────────────────┐
-│   cli.ts    │ ────────────────► │  security/guardrails  │
-│  (entrada)  │                   │  • Prompt injection   │
-└─────────────┘                   │  • Rate limiting      │
-     │                            │  • Sanitización       │
-     ▼                            └──────────────────────┘
-┌─────────────────┐
-│ DevAssistantAgent│   grafo ReAct LangGraph (max 8 tool calls/turno)
-│   agent.ts       │◄────────────────────────────────────┐
-└─────────────────┘                                      │
-     │  streaming                                        │
-     ▼                                              tool results
-┌──────────────────┐     tool_calls   ┌─────────────────┐
-│  ChatAnthropic   │ ───────────────► │  Tools (zod)    │
-│  (LangChain)     │                  │  • list_files   │
-└──────────────────┘                  │  • read_file    │
-                                      │  • search_code  │
-                                      │  • search_docs  │
-                                      │  • create_issue │
-                                      └─────────────────┘
-
-RAG Pipeline (modo /ingest + consulta directa)
-  Markdown files → Chunker → PGVectorStore (LangChain) → Postgres + pgvector
-                                  │ embeddings: OpenAI text-embedding-3-small
-  User question → PGVectorStore.similaritySearch ──────┘
-                                                                    │
-                                               Context → ChatAnthropic → Respuesta con fuentes
+Cliente
+   │  Authorization: Bearer / ?token=
+   ▼
+┌──────────────┐   JWT/Local (Passport)   ┌──────────────┐
+│ AuthModule   │ ◄──────────────────────► │ UsersModule  │  (TypeORM: users)
+└──────────────┘                          └──────────────┘
+   │
+   ├── POST /documents ─► DocumentsModule
+   │        S3Service (MinIO/AWS) ─ text-extractor (md/txt/pdf) ─ chunker
+   │                              └─► RagModule.VectorStoreService
+   │                                   (PGVectorStore + metadata.userId)   (TypeORM: documents)
+   │
+   └── GET /chat/stream ─► ChatModule
+            guardrails ─ AgentService.buildAgent(userId)
+                            │  createAgent (LangGraph) + tool search_docs(userId)
+                            │  + CheckpointerService (PostgresSaver, thread=conv-<userId>)
+                            ▼
+                       ChatAnthropic ──► SSE (Observable<MessageEvent>)
 ```
 
-### Flujo RAG
-
-1. **Ingestión:** los archivos `.md` se dividen en chunks por encabezados (`chunker.ts`) y se cargan en **Postgres + pgvector** mediante `PGVectorStore` de LangChain, que genera los embeddings con **OpenAI `text-embedding-3-small`** internamente.
-2. **Consulta:** `PGVectorStore.similaritySearch` embebe la pregunta, recupera los `TOP_K` chunks más similares (distancia coseno) y se construye un prompt aumentado que **ChatAnthropic** usa para responder citando fuentes.
-
-### Flujo Agente
-
-1. El usuario envía un mensaje; los guardrails lo validan y sanitizan.
-2. El grafo ReAct de **LangGraph** (`createAgent`) invoca a `ChatAnthropic` con las tools (definidas con `tool()` + zod).
-3. Si el modelo emite `tool_calls`, el `ToolNode` de LangGraph ejecuta la herramienta y devuelve el resultado.
-4. El ciclo se repite hasta la respuesta final o el límite de 8 tool calls (`recursionLimit`). El historial se persiste con `MemorySaver`.
+**Aislamiento multi-tenant:** cada chunk lleva `userId` y `documentId` en su `metadata`; `search_docs` filtra siempre por el `userId` del token, y la conversación se indexa por `thread_id = conv-<userId>`.
 
 ---
 
 ## Estructura del proyecto
 
 ```
-dev-assistant/
-├── src/
-│   ├── index.ts                  # Entry point
-│   ├── config.ts                 # Configuración desde variables de entorno
-│   ├── types.ts                  # Tipos TypeScript compartidos
-│   ├── agent/
-│   │   ├── agent.ts              # DevAssistantAgent — grafo ReAct (LangGraph)
-│   │   ├── demo.ts               # Script de demostración
-│   │   └── system-prompt.ts      # System prompt del agente
-│   ├── cli/
-│   │   ├── cli.ts                # CLI interactiva
-│   │   └── conversation.ts       # Manejo de historial de conversación
-│   ├── llm/
-│   │   ├── chat-model.ts         # ChatAnthropic compartido (LangChain)
-│   │   ├── prompts.ts            # Prompts reutilizables
-│   │   └── streaming.ts          # Helpers de streaming
-│   ├── rag/
-│   │   ├── chunker.ts            # División de documentos en chunks
-│   │   ├── embeddings.ts         # OpenAIEmbeddings (LangChain)
-│   │   ├── ingest.ts             # Script de ingestión standalone
-│   │   ├── rag-chain.ts          # Cadena RAG completa
-│   │   ├── retriever.ts          # Búsqueda por similitud vectorial
-│   │   └── vector-store.ts       # PGVectorStore sobre Postgres + pgvector
-│   ├── security/
-│   │   └── guardrails.ts         # Prompt injection, rate limit, sanitización
-│   ├── tools/
-│   │   ├── file-tools.ts         # Tools list_files / read_file / search_code
-│   │   ├── docs-tool.ts          # Tool search_docs (RAG)
-│   │   ├── issue-tool.ts         # Tool create_issue
-│   │   ├── executor.ts           # Lógica de filesystem reusada
-│   │   └── index.ts              # ALL_TOOLS + metadata para /tools
-│   ├── exercises/
-│   │   └── code-reviewer.ts      # Ejercicio: revisor de código con Claude
-│   └── utils/
-│       └── cost-calculator.ts    # Estimación de costos USD por modelo
-├── docs/
-│   └── sample-project/           # Documentación de ejemplo para el RAG
-│       ├── README.md
-│       ├── api-reference.md
-│       └── getting-started.md
-├── docker-compose.yml            # Postgres + pgvector
-├── .env.template                 # Plantilla de variables de entorno
-├── package.json
-└── tsconfig.json
+src/
+├── main.ts                       # Bootstrap NestJS
+├── app.module.ts                 # ConfigModule + TypeOrmModule + módulos
+├── config/configuration.ts       # Validación de env (Zod)
+├── auth/                         # JWT + Passport (register/login, strategies, guard)
+├── users/                        # Entidad User + servicio (TypeORM)
+├── documents/                    # Subida a S3 + ingesta (entity, s3, text-extractor, service, controller)
+├── rag/                          # chunker, embeddings, vector-store (filtro userId), retriever
+├── chat/                         # agent.service (SSE), chat.controller, checkpointer, system-prompt
+├── llm/                          # ChatAnthropic provider + extractText
+├── security/guardrails.ts        # Prompt injection, rate limit, sanitización
+└── common/types.ts               # Tipos compartidos
 ```

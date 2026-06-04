@@ -1,11 +1,13 @@
-import * as fs from "fs/promises";
-import * as path from "path";
-import type { Chunk } from "../types.js";
+import type { Chunk } from "../common/types";
 
 const MAX_CHUNK_SIZE = 2000;
 
-export function chunkMardown(content: string, filePath: string): Chunk[] {
-  const fileName = path.basename(filePath);
+/**
+ * Divide texto (Markdown o texto plano) en chunks acotados por tamaño,
+ * respetando encabezados `## ` y párrafos. Portado de la CLI sin cambios
+ * de lógica; ahora opera sobre el texto extraído de archivos subidos.
+ */
+export function chunkMarkdown(content: string, fileName: string): Chunk[] {
   const chunks: Chunk[] = [];
 
   const sections = content.split(/(?=^## )/m);
@@ -92,34 +94,4 @@ export function chunkMardown(content: string, filePath: string): Chunk[] {
     }
   }
   return chunks;
-}
-
-export async function processDirectory(dirPath: string): Promise<Chunk[]> {
-  const allChunks: Chunk[] = [];
-  let entries;
-  try {
-    entries = await fs.readdir(dirPath, { withFileTypes: true });
-  } catch {
-    throw new Error(`No se pudo leer el directorio: ${dirPath}`);
-  }
-  const makdownFiles = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  for (const file of makdownFiles) {
-    const fullPath = path.join(dirPath, file.name);
-
-    let content: string;
-    try {
-      content = await fs.readFile(fullPath, "utf-8");
-    } catch {
-      console.warn(`No se pudo leer: ${file.name}`);
-      continue;
-    }
-
-    const chunks = chunkMardown(content, file.name);
-    allChunks.push(...chunks);
-    console.log(`Procesando ${file.name}... ${chunks.length} chunks generados`);
-  }
-  return allChunks;
 }
