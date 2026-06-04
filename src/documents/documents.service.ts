@@ -4,24 +4,34 @@ import {
   Logger,
   NotFoundException,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { chunkMarkdown } from "../rag/chunker";
+import type { AppEnv } from "../config/configuration";
 import { VectorStoreService } from "../rag/vector-store.service";
+import { RealtimeService } from "../realtime/realtime.service";
 import { DocumentEntity } from "./document.entity";
+import type { ChunkingMessage } from "./ingestion/messages";
+import { SqsProducerService } from "./ingestion/sqs-producer.service";
 import { S3Service } from "./s3.service";
-import { extractText, isSupported } from "./text-extractor";
+import { isSupported } from "./text-extractor";
 
 @Injectable()
 export class DocumentsService {
   private readonly logger = new Logger(DocumentsService.name);
+  private readonly chunkingQueue: string;
 
   constructor(
     @InjectRepository(DocumentEntity)
     private readonly documents: Repository<DocumentEntity>,
     private readonly s3: S3Service,
     private readonly vectorStore: VectorStoreService,
-  ) {}
+    private readonly producer: SqsProducerService,
+    private readonly realtime: RealtimeService,
+    config: ConfigService<AppEnv, true>,
+  ) {
+    this.chunkingQueue = config.get("SQS_CHUNKING_QUEUE", { infer: true });
+  }
 
   list(userId: string): Promise<DocumentEntity[]> {
     return this.documents.find({
@@ -31,9 +41,10 @@ export class DocumentsService {
   }
 
   /**
-   * Sube el archivo a S3 e ingiere su contenido en el RAG del usuario,
-   * de forma síncrona. Si la ingesta falla, marca el documento como `failed`
-   * y limpia lo que se haya subido/insertado.
+   * Sube el archivo a S3 y dispara la ingesta ASÍNCRONA: registra el documento
+   * (status `queued`), lo encola en SQS (`doc-chunking`) y retorna de inmediato.
+   * El troceado y los embeddings ocurren en los workers (ver `ingestion/`), que
+   * van empujando el progreso por WebSocket.
    */
   async ingest(
     userId: string,
@@ -49,7 +60,7 @@ export class DocumentsService {
       );
     }
 
-    // 1. Registrar el documento (status processing).
+    // 1. Registrar el documento (status queued).
     let doc = await this.documents.save(
       this.documents.create({
         userId,
@@ -57,50 +68,45 @@ export class DocumentsService {
         mimeType: file.mimetype,
         sizeBytes: file.size,
         s3Key: "",
-        status: "processing",
+        status: "queued",
       }),
     );
 
     const s3Key = `users/${userId}/${doc.id}/${file.originalname}`;
 
     try {
-      // 2. Subir a S3.
+      // 2. Subir el original a S3.
       await this.s3.upload(s3Key, file.buffer, file.mimetype);
       doc.s3Key = s3Key;
-
-      // 3. Extraer texto y 4. trocear.
-      const text = await extractText(
-        file.buffer,
-        file.mimetype,
-        file.originalname,
-      );
-      const chunks = chunkMarkdown(text, file.originalname);
-      if (chunks.length === 0) {
-        throw new BadRequestException("El archivo no contiene texto indexable");
-      }
-
-      // 5. Ingerir en el vector store del usuario.
-      await this.vectorStore.addChunks(chunks, { userId, documentId: doc.id });
-
-      doc.status = "ready";
-      doc.chunkCount = chunks.length;
-      doc.errorMessage = null;
       doc = await this.documents.save(doc);
-      this.logger.log(
-        `Documento ${doc.id} ingerido: ${chunks.length} chunks (user ${userId})`,
-      );
+
+      // 3. Encolar para troceado/embeddings asíncronos.
+      const message: ChunkingMessage = {
+        documentId: doc.id,
+        userId,
+        s3Key,
+        filename: file.originalname,
+        mimeType: file.mimetype,
+      };
+      await this.producer.send(this.chunkingQueue, message);
+
+      this.realtime.emitDocumentStatus(userId, {
+        id: doc.id,
+        status: "queued",
+      });
+      this.logger.log(`Documento ${doc.id} encolado para ingesta (user ${userId})`);
       return doc;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Fallo al ingerir ${doc.id}: ${message}`);
-      // Limpieza best-effort.
+      this.logger.error(`Fallo al encolar ${doc.id}: ${message}`);
+      // Limpieza best-effort de lo subido.
       await this.safeCleanup(userId, doc.id, s3Key);
       doc.status = "failed";
       doc.errorMessage = message.slice(0, 500);
       await this.documents.save(doc);
-      throw error instanceof BadRequestException
-        ? error
-        : new BadRequestException(`No se pudo procesar el archivo: ${message}`);
+      throw new BadRequestException(
+        `No se pudo iniciar el procesamiento del archivo: ${message}`,
+      );
     }
   }
 

@@ -26,16 +26,38 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(1, "JWT_SECRET es requerida"),
   JWT_EXPIRES_IN: z.string().default("7d"),
 
-  // === S3 / MinIO ===
-  S3_ENDPOINT: z.string().default("http://localhost:9000"),
+  // === S3 (AWS) ===
+  // Endpoint opcional: en AWS S3 se deja vacío (la SDK resuelve el endpoint).
+  S3_ENDPOINT: z.url().optional().or(z.literal("")),
   S3_REGION: z.string().default("us-east-1"),
   S3_BUCKET: z.string().default("dev-assistant"),
-  S3_ACCESS_KEY: z.string().default("minioadmin"),
-  S3_SECRET_KEY: z.string().default("minioadmin"),
-  S3_FORCE_PATH_STYLE: z.coerce.boolean().default(true),
+  // Credenciales opcionales: si se omiten, se usa la cadena por defecto del SDK
+  // (rol IAM / variables de entorno / perfil).
+  S3_ACCESS_KEY: z.string().optional(),
+  S3_SECRET_KEY: z.string().optional(),
+  // En AWS S3 real va false (virtual-hosted style).
+  S3_FORCE_PATH_STYLE: z.coerce.boolean().default(false),
+
+  // === AWS (SQS + Lambda) ===
+  AWS_REGION: z.string().default("us-east-1"),
+  // Endpoint opcional: en AWS real se deja vacío.
+  AWS_ENDPOINT: z.url().optional().or(z.literal("")),
+  // Credenciales opcionales: si se omiten, se usa la cadena por defecto del SDK.
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  // Colas de la ingesta asíncrona (chunking → embeddings).
+  SQS_CHUNKING_QUEUE: z.string().default("doc-chunking"),
+  SQS_EMBEDDINGS_QUEUE: z.string().default("doc-embeddings"),
+  // Lambda que genera el PDF del reporte de stats.
+  LAMBDA_STATS_REPORT: z.string().default("stats-report"),
 
   // Tamaño máximo de archivo subido (MB)
   MAX_UPLOAD_MB: z.coerce.number().default(20),
+
+  // Orígenes permitidos para CORS (HTTP y WebSocket).
+  CORS_ORIGINS: z
+    .string()
+    .default("http://localhost:5173,http://localhost:5174"),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

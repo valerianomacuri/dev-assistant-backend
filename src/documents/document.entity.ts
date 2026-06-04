@@ -6,7 +6,17 @@ import {
   PrimaryGeneratedColumn,
 } from "typeorm";
 
-export type DocumentStatus = "processing" | "ready" | "failed";
+/**
+ * Estados del ciclo de ingestión asíncrona (SQS):
+ * `queued` (encolado) → `chunking` (troceando) → `embedding` (generando
+ * embeddings) → `ready` | `failed`.
+ */
+export type DocumentStatus =
+  | "queued"
+  | "chunking"
+  | "embedding"
+  | "ready"
+  | "failed";
 
 @Entity({ name: "documents" })
 export class DocumentEntity {
@@ -32,7 +42,7 @@ export class DocumentEntity {
   @Column({ name: "chunk_count", type: "int", default: 0 })
   chunkCount: number;
 
-  @Column({ type: "varchar", default: "processing" })
+  @Column({ type: "varchar", default: "queued" })
   status: DocumentStatus;
 
   @Column({ name: "error_message", type: "varchar", nullable: true })

@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { AuthModule } from "./auth/auth.module";
+import { AwsModule } from "./aws/aws.module";
 import { ChatMessageEntity } from "./chat/chat-message.entity";
 import { ChatModule } from "./chat/chat.module";
 import { ConversationEntity } from "./chat/conversation.entity";
@@ -35,6 +36,7 @@ import { UsersModule } from "./users/users.module";
         synchronize: true,
       }),
     }),
+    AwsModule,
     LlmModule,
     RagModule,
     UsersModule,
