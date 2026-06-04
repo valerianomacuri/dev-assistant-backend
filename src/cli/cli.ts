@@ -1,12 +1,37 @@
 import * as readline from "readline";
+import type { BaseMessage } from "@langchain/core/messages";
 import { processDirectory } from "../rag/chunker.js";
 import config from "../config.js";
 import { VectorStore } from "../rag/vector-store.js";
 import { resetStore } from "../rag/retriever.js";
 import { DevAssistantAgent } from "../agent/agent.js";
+import { closeCheckpointer } from "../agent/checkpointer.js";
+import { closeStore } from "../agent/conversation-store.js";
+import { extractText } from "../llm/chat-model.js";
 import { TOOL_METADATA } from "../tools/index.js";
 import { checkGuardrails, createRateLimiter } from "../security/guardrails.js";
 import { calculateCost } from "../utils/cost-calculator.js";
+
+/**
+ * Imprime en pantalla los mensajes guardados de la conversación previa para
+ * retomarla con contexto visible. Omite los mensajes de herramientas.
+ */
+function replayHistory(messages: BaseMessage[]): void {
+  const visible = messages.filter((m) => {
+    const type = m.getType();
+    return type === "human" || type === "ai";
+  });
+  if (visible.length === 0) return;
+
+  console.log("📜 Retomando conversación anterior:\n");
+  for (const message of visible) {
+    const text = extractText(message.content).trim();
+    if (!text) continue;
+    const speaker = message.getType() === "human" ? "Tú" : "DevAssitantAgent";
+    console.log(`${speaker}: ${text}\n`);
+  }
+  console.log("──────────────────────────────────────────\n");
+}
 
 async function ingestDocs(docsPath: string): Promise<void> {
   console.log(`\nIniciando ingestión desde: ${docsPath}`);
@@ -38,7 +63,7 @@ export async function startCLI(): Promise<void> {
     input: process.stdin,
     output: process.stdout,
   });
-  const devAssistantAgent = new DevAssistantAgent();
+  const devAssistantAgent = await DevAssistantAgent.create();
   const rateLimiter = createRateLimiter();
 
   console.log("╔════════════════════════════════════════╗");
@@ -51,6 +76,9 @@ export async function startCLI(): Promise<void> {
   console.log("   Comandos: /ingest [path],");
   console.log("             /clear, /stats, /tools, /exit");
   console.log("");
+
+  const history = await devAssistantAgent.loadHistory();
+  replayHistory(history);
 
   const promptUser = (): void => {
     rl.question("Tú: ", async (input) => {
@@ -92,11 +120,13 @@ export async function startCLI(): Promise<void> {
             `${sessionCost.formatted} costo estimado `,
         );
         await resetStore();
+        await closeCheckpointer();
+        await closeStore();
         rl.close();
         return;
       }
       if (userInput === "/clear" || userInput === "/limpiar") {
-        devAssistantAgent.clearHistory();
+        await devAssistantAgent.clearHistory();
         console.log("Historial del agente reiniciado\n");
         promptUser();
         return;

@@ -1,4 +1,6 @@
 import { DevAssistantAgent } from "./agent.js";
+import { closeCheckpointer } from "./checkpointer.js";
+import { closeStore } from "./conversation-store.js";
 import { resetStore } from "../rag/retriever.js";
 
 // === Utilidades de presentación ===
@@ -176,30 +178,30 @@ async function runDemo(): Promise<void> {
   console.log("Esta demo ejecuta 4 escenarios para mostrar las capacidades");
   console.log("del DevAssistantAgent sin necesidad de input del usuario.");
 
-  const devAssistant = new DevAssistantAgent();
+  const devAssistant = await DevAssistantAgent.create();
 
   // Escenario 1
   logSeparator();
   await exploreCode(devAssistant);
-  devAssistant.clearHistory();
+  await devAssistant.clearHistory();
   await pauseExecution();
 
   // Escenario 2
   logSeparator();
   await searchDocumentation(devAssistant);
-  devAssistant.clearHistory();
+  await devAssistant.clearHistory();
   await pauseExecution();
 
   // Escenario 3
   logSeparator();
   await executeMultiToolTask(devAssistant);
-  devAssistant.clearHistory();
+  await devAssistant.clearHistory();
   await pauseExecution();
 
   // Escenario 4
   logSeparator();
   await registerBugIssue(devAssistant);
-  devAssistant.clearHistory();
+  await devAssistant.clearHistory();
   await pauseExecution();
 
   // Resumen final
@@ -221,4 +223,8 @@ runDemo()
     console.error("Error en la demo:", error.message);
     process.exitCode = 1;
   })
-  .finally(() => resetStore());
+  .finally(async () => {
+    await resetStore();
+    await closeCheckpointer();
+    await closeStore();
+  });
