@@ -81,6 +81,16 @@ export class VectorStoreService implements OnModuleInit, OnModuleDestroy {
     await this.store.addDocuments(documents);
   }
 
+  /**
+   * Inserta los chunks de un documento de forma idempotente: borra primero los
+   * chunks previos del documento (si los hubiera) y luego los reinserta. Seguro
+   * ante reentregas de SQS (at-least-once).
+   */
+  async upsertChunks(chunks: Chunk[], owner: ChunkOwner): Promise<void> {
+    await this.deleteByDocument(owner.userId, owner.documentId);
+    await this.addChunks(chunks, owner);
+  }
+
   /** Búsqueda semántica acotada a los documentos del usuario. */
   async search(
     userId: string,

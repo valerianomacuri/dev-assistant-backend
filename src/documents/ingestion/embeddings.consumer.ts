@@ -51,7 +51,7 @@ export class EmbeddingsConsumer extends SqsConsumer<EmbeddingsMessage> {
     try {
       const raw = await this.s3.download(chunksKey);
       const chunks = JSON.parse(raw.toString("utf-8")) as Chunk[];
-      await this.vectorStore.addChunks(chunks, { userId, documentId });
+      await this.vectorStore.upsertChunks(chunks, { userId, documentId });
 
       await this.documents.update(
         { id: documentId, userId },
