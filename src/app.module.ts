@@ -8,6 +8,8 @@ import { DocumentEntity } from "./documents/document.entity";
 import { DocumentsModule } from "./documents/documents.module";
 import { LlmModule } from "./llm/llm.module";
 import { RagModule } from "./rag/rag.module";
+import { ChatStatEntity } from "./stats/chat-stat.entity";
+import { StatsModule } from "./stats/stats.module";
 import { User } from "./users/user.entity";
 import { UsersModule } from "./users/users.module";
 
@@ -22,7 +24,7 @@ import { UsersModule } from "./users/users.module";
       useFactory: (config: ConfigService<AppEnv, true>) => ({
         type: "postgres",
         url: config.get("DATABASE_URL", { infer: true }),
-        entities: [User, DocumentEntity],
+        entities: [User, DocumentEntity, ChatStatEntity],
         // synchronize solo en dev. En prod, usar migraciones.
         synchronize: true,
       }),
@@ -33,6 +35,7 @@ import { UsersModule } from "./users/users.module";
     AuthModule,
     DocumentsModule,
     ChatModule,
+    StatsModule,
   ],
 })
 export class AppModule {}

@@ -8,11 +8,15 @@ import {
 } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Logger } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { Observable } from "rxjs";
 import { z } from "zod";
+import type { AppEnv } from "../config/configuration";
 import { extractText, CHAT_MODEL } from "../llm/chat-model.provider";
 import { RetrieverService } from "../rag/retriever.service";
+import { StatsService } from "../stats/stats.service";
+import { computeCostUsd } from "../stats/pricing";
 import { CheckpointerService } from "./checkpointer.provider";
 import { AGENT_SYSTEM_PROMPT } from "./system-prompt";
 
@@ -34,14 +38,47 @@ export interface ChatMessage {
 
 @Injectable()
 export class AgentService {
+  private readonly logger = new Logger(AgentService.name);
+  private readonly modelName: string;
+
   constructor(
     @Inject(CHAT_MODEL) private readonly model: BaseChatModel,
     private readonly retriever: RetrieverService,
     private readonly checkpointer: CheckpointerService,
-  ) {}
+    private readonly stats: StatsService,
+    config: ConfigService<AppEnv, true>,
+  ) {
+    this.modelName = config.get("ANTHROPIC_MODEL", { infer: true });
+  }
 
   private threadId(userId: string): string {
     return `conv-${userId}`;
+  }
+
+  /**
+   * Persiste las estadísticas del turno. Best-effort: un fallo de persistencia
+   * no debe romper el stream que ya respondió al usuario.
+   */
+  private async persistStats(
+    userId: string,
+    inputTokens: number,
+    outputTokens: number,
+    toolsUsed: string[],
+    limitReached: boolean,
+  ): Promise<void> {
+    try {
+      await this.stats.record({
+        userId,
+        inputTokens,
+        outputTokens,
+        toolsUsed,
+        limitReached,
+        model: this.modelName,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`No se pudieron guardar las stats (user ${userId}): ${message}`);
+    }
   }
 
   /**
@@ -147,12 +184,22 @@ export class AgentService {
             }
           }
 
+          const uniqueTools = [...new Set(toolsUsed)];
+          await this.persistStats(
+            userId,
+            inputTokens,
+            outputTokens,
+            uniqueTools,
+            false,
+          );
           subscriber.next({
             type: "done",
             data: JSON.stringify({
-              toolsUsed: [...new Set(toolsUsed)],
+              toolsUsed: uniqueTools,
               inputTokens,
               outputTokens,
+              model: this.modelName,
+              costUsd: computeCostUsd(this.modelName, inputTokens, outputTokens),
             }),
           });
           subscriber.complete();
@@ -164,12 +211,26 @@ export class AgentService {
                 `He alcanzado el límite de ${MAX_TOOL_CALLS} llamadas a herramientas por turno. ` +
                 `Para completar esta tarea, intenta dividirla en preguntas más específicas.`,
             });
+            const uniqueTools = [...new Set(toolsUsed)];
+            await this.persistStats(
+              userId,
+              inputTokens,
+              outputTokens,
+              uniqueTools,
+              true,
+            );
             subscriber.next({
               type: "done",
               data: JSON.stringify({
-                toolsUsed: [...new Set(toolsUsed)],
+                toolsUsed: uniqueTools,
                 inputTokens,
                 outputTokens,
+                model: this.modelName,
+                costUsd: computeCostUsd(
+                  this.modelName,
+                  inputTokens,
+                  outputTokens,
+                ),
                 limitReached: true,
               }),
             });
