@@ -7,8 +7,8 @@ import config from "../config.js";
  *
  * El historial completo lo guarda el checkpointer (ver checkpointer.ts), pero
  * necesitamos recordar entre reinicios *cuál* `thread_id` es el activo para
- * retomar siempre la misma conversación. `/clear` simplemente apunta a un
- * `thread_id` nuevo; el anterior queda archivado en los checkpoints de Postgres.
+ * retomar siempre la misma conversación. `/clear` borra los checkpoints del
+ * `thread_id` anterior en Postgres y apunta a uno nuevo.
  */
 const TABLE_NAME = "cli_active_conversation";
 

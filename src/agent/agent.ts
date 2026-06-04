@@ -150,13 +150,18 @@ export class DevAssistantAgent {
   }
 
   async clearHistory(): Promise<void> {
-    // Nuevo thread_id => el checkpointer arranca un historial limpio.
-    // La conversación anterior queda archivada en los checkpoints de Postgres.
+    // Borramos los checkpoints del thread actual para que la conversación se
+    // elimine de Postgres en lugar de quedar archivada, y luego apuntamos a un
+    // thread_id nuevo con un historial limpio.
+    const previousThreadId = this.threadId;
+    const checkpointer = await getCheckpointer();
+    await checkpointer.deleteThread(previousThreadId);
+
     this.threadId = newThreadId();
     await setActiveThreadId(this.threadId);
     this.turns = 0;
     this.toolCallsLastTurn = 0;
-    console.log("Historial del agente limpiado");
+    console.log("Historial del agente eliminado");
   }
 
   getStats(): {
