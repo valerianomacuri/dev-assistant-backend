@@ -2,13 +2,14 @@ import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { AuthModule } from "./auth/auth.module";
+import { ChatMessageEntity } from "./chat/chat-message.entity";
 import { ChatModule } from "./chat/chat.module";
+import { ConversationEntity } from "./chat/conversation.entity";
 import { validateEnv, type AppEnv } from "./config/configuration";
 import { DocumentEntity } from "./documents/document.entity";
 import { DocumentsModule } from "./documents/documents.module";
 import { LlmModule } from "./llm/llm.module";
 import { RagModule } from "./rag/rag.module";
-import { ChatStatEntity } from "./stats/chat-stat.entity";
 import { StatsModule } from "./stats/stats.module";
 import { User } from "./users/user.entity";
 import { UsersModule } from "./users/users.module";
@@ -24,7 +25,12 @@ import { UsersModule } from "./users/users.module";
       useFactory: (config: ConfigService<AppEnv, true>) => ({
         type: "postgres",
         url: config.get("DATABASE_URL", { infer: true }),
-        entities: [User, DocumentEntity, ChatStatEntity],
+        entities: [
+          User,
+          DocumentEntity,
+          ConversationEntity,
+          ChatMessageEntity,
+        ],
         // synchronize solo en dev. En prod, usar migraciones.
         synchronize: true,
       }),

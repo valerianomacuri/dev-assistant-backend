@@ -1,6 +1,7 @@
 import { createAgent } from "langchain";
 import { GraphRecursionError } from "@langchain/langgraph";
 import {
+  AIMessage,
   HumanMessage,
   type AIMessageChunk,
   type BaseMessage,
@@ -15,10 +16,16 @@ import { z } from "zod";
 import type { AppEnv } from "../config/configuration";
 import { extractText, CHAT_MODEL } from "../llm/chat-model.provider";
 import { RetrieverService } from "../rag/retriever.service";
-import { StatsService } from "../stats/stats.service";
 import { computeCostUsd } from "../stats/pricing";
-import { CheckpointerService } from "./checkpointer.provider";
+import {
+  ConversationService,
+  type ChatMessage,
+  type TurnMeta,
+} from "./conversation.service";
+import { ConversationEntity } from "./conversation.entity";
 import { AGENT_SYSTEM_PROMPT } from "./system-prompt";
+
+export type { ChatMessage } from "./conversation.service";
 
 const MAX_TOOL_CALLS = 8;
 // Cada ciclo agente→tools→agente consume ~2 supersteps en el grafo.
@@ -30,12 +37,6 @@ export interface ChatStreamEvent {
   type?: "token" | "done" | "error";
 }
 
-/** Un mensaje del historial de la conversación. */
-export interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-}
-
 @Injectable()
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
@@ -44,41 +45,10 @@ export class AgentService {
   constructor(
     @Inject(CHAT_MODEL) private readonly model: BaseChatModel,
     private readonly retriever: RetrieverService,
-    private readonly checkpointer: CheckpointerService,
-    private readonly stats: StatsService,
+    private readonly conversations: ConversationService,
     config: ConfigService<AppEnv, true>,
   ) {
     this.modelName = config.get("ANTHROPIC_MODEL", { infer: true });
-  }
-
-  private threadId(userId: string): string {
-    return `conv-${userId}`;
-  }
-
-  /**
-   * Persiste las estadísticas del turno. Best-effort: un fallo de persistencia
-   * no debe romper el stream que ya respondió al usuario.
-   */
-  private async persistStats(
-    userId: string,
-    inputTokens: number,
-    outputTokens: number,
-    toolsUsed: string[],
-    limitReached: boolean,
-  ): Promise<void> {
-    try {
-      await this.stats.record({
-        userId,
-        inputTokens,
-        outputTokens,
-        toolsUsed,
-        limitReached,
-        model: this.modelName,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`No se pudieron guardar las stats (user ${userId}): ${message}`);
-    }
   }
 
   /**
@@ -136,7 +106,6 @@ export class AgentService {
       model: this.model,
       tools: [searchDocsTool],
       systemPrompt: AGENT_SYSTEM_PROMPT,
-      checkpointer: this.checkpointer.get(),
     });
   }
 
@@ -144,7 +113,11 @@ export class AgentService {
    * Procesa un turno y emite la respuesta del agente como un stream de eventos
    * SSE: tokens de texto en vivo y un evento `done` final con metadata.
    */
-  stream(userId: string, userMessage: string): Observable<ChatStreamEvent> {
+  stream(
+    userId: string,
+    conversationId: string,
+    userMessage: string,
+  ): Observable<ChatStreamEvent> {
     return new Observable<ChatStreamEvent>((subscriber) => {
       let cancelled = false;
 
@@ -153,45 +126,68 @@ export class AgentService {
         const toolsUsed: string[] = [];
         let inputTokens = 0;
         let outputTokens = 0;
+        // Inicio del turno: medimos la espera real del usuario (incluye tools).
+        const turnStart = Date.now();
+
+        // Mensaje humano del turno: se persiste junto con lo que genere el agente.
+        const humanMessage = new HumanMessage(userMessage);
+        // Último estado completo emitido por el modo "values"; de él extraemos
+        // el transcript final para persistirlo (sin una segunda invocación).
+        let finalMessages: BaseMessage[] | null = null;
 
         try {
+          // Validamos propiedad y cargamos el historial propio (sin checkpointer).
+          const conversation = await this.conversations.getOwned(
+            userId,
+            conversationId,
+          );
+          const history = await this.conversations.loadMessages(conversationId);
+          const inputMessages = [...history, humanMessage];
+
           const stream = await agent.stream(
-            { messages: [new HumanMessage(userMessage)] },
+            { messages: inputMessages },
             {
-              configurable: { thread_id: this.threadId(userId) },
               recursionLimit: RECURSION_LIMIT,
-              streamMode: "messages",
+              streamMode: ["messages", "values"],
             },
           );
 
           for await (const event of stream) {
             if (cancelled) break;
-            const [message] = event as [BaseMessage, Record<string, unknown>];
-            const type = message.getType();
+            const [mode, payload] = event as [string, unknown];
 
-            if (type === "ai") {
-              const usage = (message as AIMessageChunk).usage_metadata;
-              if (usage) {
-                inputTokens += usage.input_tokens ?? 0;
-                outputTokens += usage.output_tokens ?? 0;
+            if (mode === "messages") {
+              const [message] = payload as [BaseMessage, Record<string, unknown>];
+              const type = message.getType();
+              if (type === "ai") {
+                const usage = (message as AIMessageChunk).usage_metadata;
+                if (usage) {
+                  inputTokens += usage.input_tokens ?? 0;
+                  outputTokens += usage.output_tokens ?? 0;
+                }
+                const text = extractText(message.content);
+                if (text) {
+                  subscriber.next({ type: "token", data: text });
+                }
+              } else if (type === "tool") {
+                toolsUsed.push((message as ToolMessage).name ?? "desconocida");
               }
-              const text = extractText(message.content);
-              if (text) {
-                subscriber.next({ type: "token", data: text });
-              }
-            } else if (type === "tool") {
-              toolsUsed.push((message as ToolMessage).name ?? "desconocida");
+            } else if (mode === "values") {
+              finalMessages = (payload as { messages?: BaseMessage[] }).messages ?? null;
             }
           }
 
+          // Persiste el turno: humano + mensajes nuevos del agente (ai/tool).
+          // Las métricas (tokens/costo/latencia) viajan con los mensajes `ai`.
+          if (!cancelled && finalMessages) {
+            const newMessages = finalMessages.slice(inputMessages.length);
+            await this.persistTurn(conversation, [humanMessage, ...newMessages], {
+              model: this.modelName,
+              latencyMs: Date.now() - turnStart,
+            });
+          }
+
           const uniqueTools = [...new Set(toolsUsed)];
-          await this.persistStats(
-            userId,
-            inputTokens,
-            outputTokens,
-            uniqueTools,
-            false,
-          );
           subscriber.next({
             type: "done",
             data: JSON.stringify({
@@ -205,20 +201,20 @@ export class AgentService {
           subscriber.complete();
         } catch (error) {
           if (error instanceof GraphRecursionError) {
-            subscriber.next({
-              type: "token",
-              data:
-                `He alcanzado el límite de ${MAX_TOOL_CALLS} llamadas a herramientas por turno. ` +
-                `Para completar esta tarea, intenta dividirla en preguntas más específicas.`,
-            });
-            const uniqueTools = [...new Set(toolsUsed)];
-            await this.persistStats(
-              userId,
-              inputTokens,
-              outputTokens,
-              uniqueTools,
-              true,
+            const limitText =
+              `He alcanzado el límite de ${MAX_TOOL_CALLS} llamadas a herramientas por turno. ` +
+              `Para completar esta tarea, intenta dividirla en preguntas más específicas.`;
+            subscriber.next({ type: "token", data: limitText });
+            // Persistimos un par humano/ia coherente para no dejar tool calls
+            // sin resultado en el historial (rompería el reenvío a Claude).
+            await this.persistTurn(
+              await this.conversations
+                .getOwned(userId, conversationId)
+                .catch(() => null),
+              [humanMessage, new AIMessage(limitText)],
+              { model: this.modelName, latencyMs: Date.now() - turnStart },
             );
+            const uniqueTools = [...new Set(toolsUsed)];
             subscriber.next({
               type: "done",
               data: JSON.stringify({
@@ -251,35 +247,25 @@ export class AgentService {
   }
 
   /**
-   * Devuelve el historial de la conversación del usuario (mensajes humanos y
-   * de IA, en orden), leído del estado persistido por el checkpointer.
-   * Vacío si la conversación es nueva o fue limpiada.
+   * Persiste el transcript del turno. Best-effort: un fallo de persistencia
+   * no debe romper el stream que ya respondió al usuario.
    */
-  async loadHistory(userId: string): Promise<ChatMessage[]> {
-    const agent = this.buildAgent(userId);
-    const state = (await agent.getState({
-      configurable: { thread_id: this.threadId(userId) },
-    })) as { values?: { messages?: unknown } };
-
-    const messages = state.values?.messages;
-    if (!Array.isArray(messages)) return [];
-
-    const history: ChatMessage[] = [];
-    for (const message of messages as BaseMessage[]) {
-      const type = message.getType();
-      if (type !== "human" && type !== "ai") continue;
-      const text = extractText(message.content).trim();
-      if (!text) continue;
-      history.push({
-        role: type === "human" ? "user" : "assistant",
-        content: text,
-      });
+  private async persistTurn(
+    conversation: ConversationEntity | null,
+    messages: BaseMessage[],
+    turnMeta: TurnMeta,
+  ): Promise<void> {
+    if (!conversation) return;
+    try {
+      await this.conversations.appendTurn(conversation, messages, turnMeta);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`No se pudo guardar el turno (conv ${conversation.id}): ${message}`);
     }
-    return history;
   }
 
-  /** Limpia la conversación del usuario (borra sus checkpoints). */
-  async clear(userId: string): Promise<void> {
-    await this.checkpointer.deleteThread(this.threadId(userId));
+  /** Historial de la conversación (mensajes humanos y de IA, en orden). */
+  loadHistory(conversationId: string): Promise<ChatMessage[]> {
+    return this.conversations.history(conversationId);
   }
 }

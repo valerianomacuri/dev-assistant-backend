@@ -1,14 +1,20 @@
 import { Module } from "@nestjs/common";
+import { TypeOrmModule } from "@nestjs/typeorm";
 import { LlmModule } from "../llm/llm.module";
 import { RagModule } from "../rag/rag.module";
-import { StatsModule } from "../stats/stats.module";
 import { AgentService } from "./agent.service";
 import { ChatController } from "./chat.controller";
-import { CheckpointerService } from "./checkpointer.provider";
+import { ChatMessageEntity } from "./chat-message.entity";
+import { ConversationEntity } from "./conversation.entity";
+import { ConversationService } from "./conversation.service";
 
 @Module({
-  imports: [LlmModule, RagModule, StatsModule],
+  imports: [
+    LlmModule,
+    RagModule,
+    TypeOrmModule.forFeature([ConversationEntity, ChatMessageEntity]),
+  ],
   controllers: [ChatController],
-  providers: [AgentService, CheckpointerService],
+  providers: [AgentService, ConversationService],
 })
 export class ChatModule {}
