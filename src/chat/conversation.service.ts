@@ -2,15 +2,20 @@ import { ForbiddenException, Injectable, NotFoundException } from "@nestjs/commo
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import {
-  AIMessage,
-  HumanMessage,
-  ToolMessage,
+  mapChatMessagesToStoredMessages,
+  mapStoredMessagesToChatMessages,
+  type AIMessage,
   type BaseMessage,
+  type ToolMessage,
 } from "@langchain/core/messages";
 import { extractText } from "../llm/chat-model.provider";
-import { computeCostUsd } from "../stats/pricing";
 import { ConversationEntity } from "./conversation.entity";
-import { ChatMessageEntity, type ChatMessageType } from "./chat-message.entity";
+import { MessageEntity, type ChatMessageType } from "./message.entity";
+import { AgentRunEntity, type AgentRunStatus } from "./agent-run.entity";
+import {
+  ToolExecutionEntity,
+  type ToolExecutionStatus,
+} from "./tool-execution.entity";
 
 /** Un mensaje del historial de la conversación (vista para la UI). */
 export interface ChatMessage {
@@ -18,22 +23,49 @@ export interface ChatMessage {
   content: string;
 }
 
-/** Métrica del turno que se persiste junto con los mensajes que generó. */
-export interface TurnMeta {
-  model: string;
+/** Tokens acumulados de un turno (run). */
+export interface RunTokens {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+/** Cierre de un run con su resultado y métricas agregadas. */
+export interface RunResult {
+  status: AgentRunStatus;
+  iterations: number;
+  tokens: RunTokens;
+  error?: string | null;
+}
+
+/** Registro de una ejecución de tool capturado durante el turno. */
+export interface ToolExecutionLog {
+  toolName: string;
+  toolCallId: string | null;
+  input: unknown;
+  output: unknown;
+  status: ToolExecutionStatus;
+  error: string | null;
   latencyMs: number;
 }
 
 const DEFAULT_TITLE = "Nueva conversación";
 const TITLE_MAX_LENGTH = 60;
+const MODEL_PROVIDER = "anthropic";
 
 @Injectable()
 export class ConversationService {
   constructor(
     @InjectRepository(ConversationEntity)
     private readonly conversations: Repository<ConversationEntity>,
-    @InjectRepository(ChatMessageEntity)
-    private readonly messages: Repository<ChatMessageEntity>,
+    @InjectRepository(MessageEntity)
+    private readonly messages: Repository<MessageEntity>,
+    @InjectRepository(AgentRunEntity)
+    private readonly runs: Repository<AgentRunEntity>,
+    @InjectRepository(ToolExecutionEntity)
+    private readonly toolExecs: Repository<ToolExecutionEntity>,
   ) {}
 
   /** Crea una conversación vacía para el usuario. */
@@ -74,67 +106,69 @@ export class ConversationService {
     return conversation;
   }
 
+  /** Abre un run (turno del usuario) en estado `running`. */
+  startRun(conversationId: string): Promise<AgentRunEntity> {
+    return this.runs.save(this.runs.create({ conversationId, status: "running" }));
+  }
+
+  /** Cierra un run con su estado final, iteraciones y tokens agregados. */
+  async finishRun(run: AgentRunEntity, result: RunResult): Promise<void> {
+    run.status = result.status;
+    run.iterations = result.iterations;
+    run.inputTokens = result.tokens.inputTokens;
+    run.outputTokens = result.tokens.outputTokens;
+    run.totalTokens = result.tokens.totalTokens;
+    run.cacheReadTokens = result.tokens.cacheReadTokens;
+    run.cacheCreationTokens = result.tokens.cacheCreationTokens;
+    run.error = result.error ?? null;
+    run.finishedAt = new Date();
+    await this.runs.save(run);
+  }
+
   /**
-   * Reconstruye el transcript completo como `BaseMessage[]`, en orden, para
-   * reenviarlo al agente. Los pares tool_use/tool_result se preservan porque
-   * se guardaron tal cual los produjo LangGraph.
+   * Reconstruye el transcript completo como `BaseMessage[]`, en orden, a partir
+   * de la columna `raw` (StoredMessage). Mantiene fidelidad total: los pares
+   * tool_use/tool_result se preservan tal cual los produjo LangGraph.
    */
   async loadMessages(conversationId: string): Promise<BaseMessage[]> {
     const rows = await this.messages.find({
       where: { conversationId },
-      order: { seq: "ASC" },
+      order: { createdAt: "ASC" },
     });
-
-    return rows.map((row) => {
-      switch (row.type) {
-        case "ai":
-          return new AIMessage({
-            content: row.content,
-            tool_calls: row.toolCalls ?? [],
-          });
-        case "tool":
-          return new ToolMessage({
-            content: row.content,
-            tool_call_id: row.toolCallId ?? "",
-            name: row.name ?? undefined,
-          });
-        case "human":
-        default:
-          return new HumanMessage({ content: row.content });
-      }
-    });
+    return mapStoredMessagesToChatMessages(rows.map((row) => row.raw));
   }
 
   /**
-   * Persiste el lote de mensajes nuevos de un turno, asignando `seq`
-   * consecutivo a partir del máximo actual. Actualiza `updatedAt` y, si la
-   * conversación aún tiene el título por defecto, lo deriva del primer humano.
+   * Persiste el lote de mensajes nuevos del turno con su `runId` e `iteration`.
+   * Devuelve un mapa `tool_call_id → message_id` para enlazar las ejecuciones de
+   * tools al `ToolMessage` que contiene su resultado. Asigna `createdAt`
+   * estrictamente creciente para garantizar el orden del transcript.
    */
   async appendTurn(
     conversation: ConversationEntity,
+    runId: string,
     newMessages: BaseMessage[],
-    turnMeta: TurnMeta,
-  ): Promise<void> {
-    if (newMessages.length === 0) return;
+    fallbackModel: string,
+  ): Promise<Map<string, string>> {
+    if (newMessages.length === 0) return new Map();
 
-    const existing = await this.messages.count({
-      where: { conversationId: conversation.id },
+    const base = Date.now();
+    let aiCount = 0;
+    const rows = newMessages.map((message, index) => {
+      const type = message.getType() as ChatMessageType;
+      const iteration = type === "ai" ? ++aiCount : type === "tool" ? aiCount : 0;
+      return this.messages.create(
+        this.toRow(
+          conversation.id,
+          runId,
+          message,
+          iteration,
+          new Date(base + index),
+          fallbackModel,
+        ),
+      );
     });
-
-    // La latencia del turno se guarda solo en el último mensaje `ai` del lote.
-    const lastAiIndex = newMessages.reduce(
-      (last, m, i) => (m.getType() === "ai" ? i : last),
-      -1,
-    );
-
-    const rows = newMessages.map((message, index) =>
-      this.messages.create(
-        this.toRow(conversation.id, message, existing + index, turnMeta, {
-          isLastAi: index === lastAiIndex,
-        }),
-      ),
-    );
-    await this.messages.save(rows);
+    const saved = await this.messages.save(rows);
 
     // Deriva el título del primer mensaje humano si sigue por defecto.
     if (conversation.title === DEFAULT_TITLE) {
@@ -151,19 +185,61 @@ export class ConversationService {
     }
     // save() toca updatedAt (UpdateDateColumn) aunque solo cambie el título.
     await this.conversations.save(conversation);
+
+    const callIdToMessageId = new Map<string, string>();
+    for (const row of saved) {
+      if (row.type === "tool" && row.toolCallId) {
+        callIdToMessageId.set(row.toolCallId, row.id);
+      }
+    }
+    return callIdToMessageId;
+  }
+
+  /**
+   * Persiste las ejecuciones de tools del turno, enlazándolas al `ToolMessage`
+   * correspondiente por `tool_call_id`. Omite las que no tengan mensaje asociado
+   * (la FK a `messages` es obligatoria).
+   */
+  async recordToolExecutions(
+    runId: string,
+    execs: ToolExecutionLog[],
+    callIdToMessageId: Map<string, string>,
+  ): Promise<void> {
+    if (execs.length === 0) return;
+    const rows: ToolExecutionEntity[] = [];
+    for (const exec of execs) {
+      const messageId = exec.toolCallId
+        ? callIdToMessageId.get(exec.toolCallId)
+        : undefined;
+      if (!messageId) continue;
+      rows.push(
+        this.toolExecs.create({
+          messageId,
+          runId,
+          toolName: exec.toolName,
+          toolCallId: exec.toolCallId,
+          input: exec.input ?? null,
+          output: exec.output ?? null,
+          status: exec.status,
+          error: exec.error,
+          latencyMs: exec.latencyMs,
+        }),
+      );
+    }
+    if (rows.length > 0) await this.toolExecs.save(rows);
   }
 
   /** Historial usuario/asistente (texto) para la UI. Omite tool calls. */
   async history(conversationId: string): Promise<ChatMessage[]> {
     const rows = await this.messages.find({
       where: { conversationId },
-      order: { seq: "ASC" },
+      order: { createdAt: "ASC" },
     });
 
     const history: ChatMessage[] = [];
     for (const row of rows) {
       if (row.type !== "human" && row.type !== "ai") continue;
-      const text = extractText(row.content).trim();
+      const text = (row.textContent ?? "").trim();
       if (!text) continue;
       history.push({
         role: row.type === "human" ? "user" : "assistant",
@@ -182,40 +258,53 @@ export class ConversationService {
   /** Convierte un `BaseMessage` de LangChain en una fila persistible. */
   private toRow(
     conversationId: string,
+    runId: string,
     message: BaseMessage,
-    seq: number,
-    turnMeta: TurnMeta,
-    flags: { isLastAi: boolean },
-  ): Partial<ChatMessageEntity> {
+    iteration: number,
+    createdAt: Date,
+    fallbackModel: string,
+  ): Partial<MessageEntity> {
     const type = message.getType() as ChatMessageType;
-    const base = { conversationId, seq, type, content: message.content };
+    const raw = mapChatMessagesToStoredMessages([message])[0];
+    const base: Partial<MessageEntity> = {
+      conversationId,
+      runId,
+      type,
+      textContent: extractText(message.content) || null,
+      raw,
+      iteration,
+      createdAt,
+    };
 
     if (type === "ai") {
       const ai = message as AIMessage;
-      const tools = ai.tool_calls;
-      // Métricas del mensaje: tokens del propio `usage_metadata`, costo derivado
-      // del modelo del turno, y la latencia del turno solo en el último `ai`.
+      const meta = (ai.response_metadata ?? {}) as Record<string, unknown>;
       const usage = ai.usage_metadata;
-      const inputTokens = usage?.input_tokens ?? 0;
-      const outputTokens = usage?.output_tokens ?? 0;
-      const cachedTokens = usage?.input_token_details?.cache_read ?? 0;
+      const tools = ai.tool_calls;
+      const invalid = ai.invalid_tool_calls;
       return {
         ...base,
+        name: "model",
+        providerMessageId: (meta.id as string) ?? ai.id ?? null,
         toolCalls: tools && tools.length > 0 ? tools : null,
-        model: turnMeta.model,
-        inputTokens,
-        outputTokens,
-        cachedTokens,
-        costUsd: computeCostUsd(turnMeta.model, inputTokens, outputTokens),
-        latencyMs: flags.isLastAi ? turnMeta.latencyMs : 0,
+        invalidToolCalls: invalid && invalid.length > 0 ? invalid : null,
+        model: (meta.model as string) ?? fallbackModel,
+        modelProvider: MODEL_PROVIDER,
+        finishReason: (meta.stop_reason as string) ?? null,
+        serviceTier: (meta.service_tier as string) ?? null,
+        inputTokens: usage?.input_tokens ?? null,
+        outputTokens: usage?.output_tokens ?? null,
+        totalTokens: usage?.total_tokens ?? null,
+        cacheReadTokens: usage?.input_token_details?.cache_read ?? 0,
+        cacheCreationTokens: usage?.input_token_details?.cache_creation ?? 0,
       };
     }
     if (type === "tool") {
       const tool = message as ToolMessage;
       return {
         ...base,
-        toolCallId: tool.tool_call_id,
         name: tool.name ?? null,
+        toolCallId: tool.tool_call_id,
       };
     }
     return base;

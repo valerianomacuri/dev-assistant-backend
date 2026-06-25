@@ -10,12 +10,12 @@ import {
 
 /**
  * Una conversación de chat de un usuario. Cada usuario puede tener varias.
- * Los mensajes asociados viven en `chat_message`, ordenados por `seq`.
+ * Los mensajes asociados viven en `messages`, ordenados por `created_at`.
  *
  * El borrado es lógico (`deletedAt`): TypeORM excluye automáticamente las
  * filas con `deletedAt` no nulo en los `find`/`findOne` del repositorio.
  */
-@Entity({ name: "conversation" })
+@Entity({ name: "conversations" })
 export class ConversationEntity {
   @PrimaryGeneratedColumn("uuid")
   id: string;

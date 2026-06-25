@@ -1,7 +1,9 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
-import { ChatMessageEntity } from "../chat/chat-message.entity";
+import { MessageEntity } from "../chat/message.entity";
+import { AgentRunEntity } from "../chat/agent-run.entity";
+import { computeCostUsd } from "./pricing";
 
 /** Totales acumulados de un usuario. */
 export interface StatsSummary {
@@ -9,7 +11,7 @@ export interface StatsSummary {
   totalOutputTokens: number;
   messageCount: number;
   totalCostUsd: number;
-  // KPIs con valor para el stakeholder, derivados de los mismos mensajes.
+  // KPIs con valor para el stakeholder, derivados de los mismos mensajes/runs.
   conversationCount: number;
   avgLatencyMs: number;
 }
@@ -27,98 +29,156 @@ export interface ConversationStat {
 }
 
 /**
- * Estadísticas de uso derivadas directamente de `chat_message`: las métricas
- * (tokens/costo/latencia) viven en cada mensaje del asistente, así que el
- * transcript es la única fuente de verdad. Solo se agregan los mensajes `ai`;
- * el JOIN a `conversation` aporta el `user_id` para acotar por usuario.
+ * Estadísticas de uso. Tras separar el modelo en cuatro tablas, las métricas ya
+ * no se almacenan precalculadas: el **costo** se deriva al vuelo de los tokens y
+ * el modelo de cada mensaje `ai` (agrupando por modelo, fiel a precios mixtos),
+ * y la **latencia** del run con `finished_at - started_at`. Las conversaciones
+ * borradas (soft-delete) se incluyen a propósito: el costo se incurrió igual.
  */
 @Injectable()
 export class StatsService {
   constructor(
-    @InjectRepository(ChatMessageEntity)
-    private readonly messages: Repository<ChatMessageEntity>,
+    @InjectRepository(MessageEntity)
+    private readonly messages: Repository<MessageEntity>,
+    @InjectRepository(AgentRunEntity)
+    private readonly runs: Repository<AgentRunEntity>,
   ) {}
 
   /** Agregados de uso del usuario. Devuelve ceros si no hay registros. */
   async summary(userId: string): Promise<StatsSummary> {
-    const row = await this.aiMessagesOf(userId)
-      .select("COALESCE(SUM(m.input_tokens), 0)", "totalInputTokens")
-      .addSelect("COALESCE(SUM(m.output_tokens), 0)", "totalOutputTokens")
-      .addSelect("COUNT(*)", "messageCount")
-      .addSelect("COALESCE(SUM(m.cost_usd), 0)", "totalCostUsd")
+    // Tokens y costo por modelo (costo = Σ computeCostUsd por grupo de modelo).
+    const tokenRows = await this.aiMessagesOf(userId)
+      .select("m.model", "model")
+      .addSelect("COALESCE(SUM(m.input_tokens), 0)", "inputTokens")
+      .addSelect("COALESCE(SUM(m.output_tokens), 0)", "outputTokens")
+      .groupBy("m.model")
+      .getRawMany<{ model: string | null; inputTokens: string; outputTokens: string }>();
+
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCostUsd = 0;
+    for (const row of tokenRows) {
+      const inTok = Number(row.inputTokens);
+      const outTok = Number(row.outputTokens);
+      totalInputTokens += inTok;
+      totalOutputTokens += outTok;
+      totalCostUsd += computeCostUsd(row.model ?? "", inTok, outTok);
+    }
+
+    const counts = await this.aiMessagesOf(userId)
+      .select("COUNT(*)", "messageCount")
       .addSelect("COUNT(DISTINCT m.conversation_id)", "conversationCount")
-      // Promedio solo sobre mensajes con latencia medida (el último `ai` de cada
-      // turno); el resto guarda 0 y se excluye con NULLIF para no sesgar el KPI.
-      .addSelect("COALESCE(AVG(NULLIF(m.latency_ms, 0)), 0)", "avgLatencyMs")
-      .getRawOne<{
-        totalInputTokens: string;
-        totalOutputTokens: string;
-        messageCount: string;
-        totalCostUsd: string;
-        conversationCount: string;
-        avgLatencyMs: string;
-      }>();
+      .getRawOne<{ messageCount: string; conversationCount: string }>();
+
+    const latency = await this.runsOf(userId)
+      .andWhere("r.finished_at IS NOT NULL")
+      .select(
+        "COALESCE(AVG(EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) * 1000), 0)",
+        "avgLatencyMs",
+      )
+      .getRawOne<{ avgLatencyMs: string }>();
 
     return {
-      totalInputTokens: Number(row?.totalInputTokens ?? 0),
-      totalOutputTokens: Number(row?.totalOutputTokens ?? 0),
-      messageCount: Number(row?.messageCount ?? 0),
-      totalCostUsd: Number(row?.totalCostUsd ?? 0),
-      conversationCount: Number(row?.conversationCount ?? 0),
-      avgLatencyMs: Math.round(Number(row?.avgLatencyMs ?? 0)),
+      totalInputTokens,
+      totalOutputTokens,
+      messageCount: Number(counts?.messageCount ?? 0),
+      totalCostUsd,
+      conversationCount: Number(counts?.conversationCount ?? 0),
+      avgLatencyMs: Math.round(Number(latency?.avgLatencyMs ?? 0)),
     };
   }
 
   /**
    * Desglose de uso por conversación del usuario, de la más reciente a la más
-   * antigua. Responde "¿cuánto cuesta y cuántos turnos lleva cada conversación?".
+   * antigua. Tokens/costo salen de `messages`; turnos y latencia de `agent_runs`.
    */
   async byConversation(userId: string): Promise<ConversationStat[]> {
-    const rows = await this.aiMessagesOf(userId)
+    const tokenRows = await this.aiMessagesOf(userId)
       .select("m.conversation_id", "conversationId")
-      .addSelect("c.title", "title")
-      .addSelect("COUNT(*)", "turnCount")
+      .addSelect("m.model", "model")
       .addSelect("COALESCE(SUM(m.input_tokens), 0)", "inputTokens")
       .addSelect("COALESCE(SUM(m.output_tokens), 0)", "outputTokens")
-      .addSelect("COALESCE(SUM(m.cost_usd), 0)", "costUsd")
-      .addSelect("COALESCE(AVG(NULLIF(m.latency_ms, 0)), 0)", "avgLatencyMs")
-      .addSelect("MAX(m.created_at)", "lastActivity")
       .groupBy("m.conversation_id")
+      .addGroupBy("m.model")
+      .getRawMany<{
+        conversationId: string;
+        model: string | null;
+        inputTokens: string;
+        outputTokens: string;
+      }>();
+
+    // Agrega por conversación, sumando el costo por grupo de modelo.
+    const byConv = new Map<
+      string,
+      { inputTokens: number; outputTokens: number; costUsd: number }
+    >();
+    for (const row of tokenRows) {
+      const inTok = Number(row.inputTokens);
+      const outTok = Number(row.outputTokens);
+      const acc = byConv.get(row.conversationId) ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      };
+      acc.inputTokens += inTok;
+      acc.outputTokens += outTok;
+      acc.costUsd += computeCostUsd(row.model ?? "", inTok, outTok);
+      byConv.set(row.conversationId, acc);
+    }
+
+    const runRows = await this.runsOf(userId)
+      .select("r.conversation_id", "conversationId")
+      .addSelect("c.title", "title")
+      .addSelect("COUNT(*)", "turnCount")
+      .addSelect(
+        "COALESCE(AVG(EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) * 1000), 0)",
+        "avgLatencyMs",
+      )
+      .addSelect("MAX(r.started_at)", "lastActivity")
+      .groupBy("r.conversation_id")
       .addGroupBy("c.title")
-      .orderBy("MAX(m.created_at)", "DESC")
+      .orderBy("MAX(r.started_at)", "DESC")
       .getRawMany<{
         conversationId: string;
         title: string;
         turnCount: string;
-        inputTokens: string;
-        outputTokens: string;
-        costUsd: string;
         avgLatencyMs: string;
         lastActivity: Date;
       }>();
 
-    return rows.map((r) => ({
-      conversationId: r.conversationId,
-      title: r.title,
-      turnCount: Number(r.turnCount),
-      inputTokens: Number(r.inputTokens),
-      outputTokens: Number(r.outputTokens),
-      costUsd: Number(r.costUsd),
-      avgLatencyMs: Math.round(Number(r.avgLatencyMs)),
-      lastActivity: r.lastActivity,
-    }));
+    return runRows.map((r) => {
+      const tokens = byConv.get(r.conversationId) ?? {
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+      };
+      return {
+        conversationId: r.conversationId,
+        title: r.title,
+        turnCount: Number(r.turnCount),
+        inputTokens: tokens.inputTokens,
+        outputTokens: tokens.outputTokens,
+        costUsd: tokens.costUsd,
+        avgLatencyMs: Math.round(Number(r.avgLatencyMs)),
+        lastActivity: r.lastActivity,
+      };
+    });
   }
 
-  /**
-   * Base común: mensajes `ai` del usuario, uniendo `conversation` por su
-   * `user_id`. Incluye conversaciones borradas (soft-delete) a propósito: el
-   * costo se incurrió igual y el histórico debe ser estable.
-   */
+  /** Base común: mensajes `ai` del usuario (join a `conversations` por user_id). */
   private aiMessagesOf(userId: string) {
     return this.messages
       .createQueryBuilder("m")
-      .innerJoin("conversation", "c", "c.id = m.conversation_id")
+      .innerJoin("conversations", "c", "c.id = m.conversation_id")
       .where("m.type = :type", { type: "ai" })
       .andWhere("c.user_id = :userId", { userId });
+  }
+
+  /** Base común: runs del usuario (join a `conversations` por user_id). */
+  private runsOf(userId: string) {
+    return this.runs
+      .createQueryBuilder("r")
+      .innerJoin("conversations", "c", "c.id = r.conversation_id")
+      .where("c.user_id = :userId", { userId });
   }
 }

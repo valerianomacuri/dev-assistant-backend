@@ -1,15 +1,16 @@
 import { Module } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
-import { ChatMessageEntity } from "../chat/chat-message.entity";
+import { AgentRunEntity } from "../chat/agent-run.entity";
+import { MessageEntity } from "../chat/message.entity";
 import { StatsReportService } from "./stats-report.service";
 import { StatsController } from "./stats.controller";
 import { StatsService } from "./stats.service";
 
 @Module({
-  // Las stats se agregan desde `chat_message`; el JOIN a `conversation` se hace
-  // por nombre de tabla, así que basta con registrar esta entidad.
+  // Las stats se agregan desde `messages` (tokens/costo) y `agent_runs`
+  // (latencia/turnos); el JOIN a `conversations` se hace por nombre de tabla.
   // El LambdaClient lo provee AwsModule (global).
-  imports: [TypeOrmModule.forFeature([ChatMessageEntity])],
+  imports: [TypeOrmModule.forFeature([MessageEntity, AgentRunEntity])],
   controllers: [StatsController],
   providers: [StatsService, StatsReportService],
 })

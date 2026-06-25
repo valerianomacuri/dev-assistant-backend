@@ -3,9 +3,11 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { AuthModule } from "./auth/auth.module";
 import { AwsModule } from "./aws/aws.module";
-import { ChatMessageEntity } from "./chat/chat-message.entity";
+import { AgentRunEntity } from "./chat/agent-run.entity";
 import { ChatModule } from "./chat/chat.module";
 import { ConversationEntity } from "./chat/conversation.entity";
+import { MessageEntity } from "./chat/message.entity";
+import { ToolExecutionEntity } from "./chat/tool-execution.entity";
 import { validateEnv, type AppEnv } from "./config/configuration";
 import { DocumentEntity } from "./documents/document.entity";
 import { DocumentsModule } from "./documents/documents.module";
@@ -30,7 +32,9 @@ import { UsersModule } from "./users/users.module";
           User,
           DocumentEntity,
           ConversationEntity,
-          ChatMessageEntity,
+          AgentRunEntity,
+          MessageEntity,
+          ToolExecutionEntity,
         ],
         // synchronize solo en dev. En prod, usar migraciones.
         synchronize: true,

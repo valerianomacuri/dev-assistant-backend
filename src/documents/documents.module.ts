@@ -21,8 +21,8 @@ import { S3Service } from "./s3.service";
     DocumentsService,
     S3Service,
     SqsProducerService,
-    ChunkingConsumer,
-    EmbeddingsConsumer,
+    // ChunkingConsumer,
+    // EmbeddingsConsumer,
   ],
 })
 export class DocumentsModule {}
