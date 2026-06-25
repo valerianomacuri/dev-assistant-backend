@@ -1,6 +1,6 @@
 /**
- * Provisiona las colas SQS de la ingesta en AWS:
- *   doc-chunking / doc-embeddings + sus DLQ (RedrivePolicy con maxReceiveCount=3).
+ * Provisiona la cola SQS de la ingesta en AWS:
+ *   doc-ingest + su DLQ (RedrivePolicy con maxReceiveCount=3).
  *
  * Uso:
  *   node scripts/setup-aws.mjs
@@ -22,10 +22,8 @@ import {
 const REGION = process.env.AWS_REGION ?? "us-east-1";
 const ENDPOINT = process.env.AWS_ENDPOINT;
 
-const CHUNKING_QUEUE =
-  process.env.SQS_CHUNKING_QUEUE ?? "dev-assistant-jobs-doc-chunking";
-const EMBEDDINGS_QUEUE =
-  process.env.SQS_EMBEDDINGS_QUEUE ?? "dev-assistant-jobs-doc-embeddings";
+const INGEST_QUEUE =
+  process.env.SQS_INGEST_QUEUE ?? "dev-assistant-jobs-doc-ingest";
 
 const sqs = new SQSClient({
   region: REGION,
@@ -75,10 +73,9 @@ async function setupQueuePair(mainName) {
 }
 
 async function main() {
-  console.log(`→ Creando colas SQS en ${REGION}…`);
-  await setupQueuePair(CHUNKING_QUEUE);
-  await setupQueuePair(EMBEDDINGS_QUEUE);
-  console.log("✅ Colas SQS listas.");
+  console.log(`→ Creando cola SQS en ${REGION}…`);
+  await setupQueuePair(INGEST_QUEUE);
+  console.log("✅ Cola SQS lista.");
 }
 
 main().catch((error) => {

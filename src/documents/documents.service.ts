@@ -11,7 +11,7 @@ import type { AppEnv } from "../config/configuration";
 import { VectorStoreService } from "../rag/vector-store.service";
 import { RealtimeService } from "../realtime/realtime.service";
 import { DocumentEntity } from "./document.entity";
-import type { ChunkingMessage } from "./ingestion/messages";
+import type { IngestMessage } from "./ingestion/messages";
 import { SqsProducerService } from "./ingestion/sqs-producer.service";
 import { S3Service } from "./s3.service";
 import { isSupported } from "./text-extractor";
@@ -19,7 +19,7 @@ import { isSupported } from "./text-extractor";
 @Injectable()
 export class DocumentsService {
   private readonly logger = new Logger(DocumentsService.name);
-  private readonly chunkingQueue: string;
+  private readonly ingestQueue: string;
 
   constructor(
     @InjectRepository(DocumentEntity)
@@ -30,7 +30,7 @@ export class DocumentsService {
     private readonly realtime: RealtimeService,
     config: ConfigService<AppEnv, true>,
   ) {
-    this.chunkingQueue = config.get("SQS_CHUNKING_QUEUE", { infer: true });
+    this.ingestQueue = config.get("SQS_INGEST_QUEUE", { infer: true });
   }
 
   list(userId: string): Promise<DocumentEntity[]> {
@@ -42,9 +42,9 @@ export class DocumentsService {
 
   /**
    * Sube el archivo a S3 y dispara la ingesta ASÍNCRONA: registra el documento
-   * (status `queued`), lo encola en SQS (`doc-chunking`) y retorna de inmediato.
-   * El troceado y los embeddings ocurren en los workers (ver `ingestion/`), que
-   * van empujando el progreso por WebSocket.
+   * (status `queued`), lo encola en SQS (`ingest`) y retorna de inmediato.
+   * El troceado y los embeddings ocurren en el worker (ver `ingestion/`), que
+   * va empujando el progreso por WebSocket.
    */
   async ingest(
     userId: string,
@@ -81,14 +81,14 @@ export class DocumentsService {
       doc = await this.documents.save(doc);
 
       // 3. Encolar para troceado/embeddings asíncronos.
-      const message: ChunkingMessage = {
+      const message: IngestMessage = {
         documentId: doc.id,
         userId,
         s3Key,
         filename: file.originalname,
         mimeType: file.mimetype,
       };
-      await this.producer.send(this.chunkingQueue, message);
+      await this.producer.send(this.ingestQueue, message);
 
       this.realtime.emitDocumentStatus(userId, {
         id: doc.id,

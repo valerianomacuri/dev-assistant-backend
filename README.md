@@ -10,7 +10,7 @@ DevAssistant es una API construida con **NestJS** que combina **Retrieval Augmen
 
 - **Multi-tenant** — cada usuario tiene sus conversaciones aisladas (validadas por `userId`) y su RAG aislado (chunks filtrados por `userId`).
 - **Autenticación JWT** — registro/login con email y password (hash con bcrypt), Passport (`local` + `jwt`).
-- **Base de conocimiento por usuario** — sube `.md`, `.txt` o `.pdf`; se guardan en **AWS S3** y se ingestan de forma **asíncrona** vía **AWS SQS**: dos colas encadenadas (`doc-chunking` → `doc-embeddings`) con DLQ.
+- **Base de conocimiento por usuario** — sube `.md`, `.txt` o `.pdf`; se guardan en **AWS S3** y se ingestan de forma **asíncrona** vía **AWS SQS**: una única cola (`doc-ingest`) con DLQ.
 - **Progreso en tiempo real (WebSockets)** — un gateway Socket.IO empuja el estado de ingestión (`queued → chunking → embedding → ready/failed`) al frontend, sin polling.
 - **Streaming SSE** — la respuesta del agente se emite en tiempo real (`text/event-stream`).
 - **Reporte PDF (Lambda)** — `GET /stats/report.pdf` delega el render a una **Lambda Python + WeasyPrint** (AWS) y devuelve el PDF. El código de la Lambda vive en el repo aparte [`dev-assistant-stats-lambda`](../dev-assistant-stats-lambda).
@@ -41,7 +41,7 @@ pnpm install
 # Levanta Postgres + pgvector (la única dependencia local).
 docker compose up -d
 
-# Crea las colas SQS de la ingesta (doc-chunking / doc-embeddings + DLQ) en AWS.
+# Crea la cola SQS de la ingesta (doc-ingest + DLQ) en AWS.
 # Usa las credenciales de tu cadena por defecto del SDK/CLI de AWS.
 pnpm aws:setup
 ```
@@ -138,10 +138,8 @@ Cliente
 └──────────────┘                          └──────────────┘
    │
    ├── POST /documents ─► DocumentsModule (status=queued)
-   │        S3Service (AWS S3) ─► SQS doc-chunking
-   │             └─ ChunkingConsumer: text-extractor ─ chunker ─ chunks.json a S3
-   │                  └─► SQS doc-embeddings
-   │                       └─ EmbeddingsConsumer ─► RagModule.VectorStoreService
+   │        S3Service (AWS S3) ─► SQS doc-ingest
+   │             └─ IngestConsumer: text-extractor ─ chunker ─► RagModule.VectorStoreService
    │                            (PGVectorStore + metadata.userId)    (TypeORM: documents)
    │            ╰─ RealtimeModule (Socket.IO) empuja document.status ─► frontend
    │

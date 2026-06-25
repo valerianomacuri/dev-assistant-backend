@@ -45,9 +45,8 @@ const envSchema = z.object({
   // Credenciales opcionales: si se omiten, se usa la cadena por defecto del SDK.
   AWS_ACCESS_KEY_ID: z.string().optional(),
   AWS_SECRET_ACCESS_KEY: z.string().optional(),
-  // Colas de la ingesta asíncrona (chunking → embeddings).
-  SQS_CHUNKING_QUEUE: z.string().default("doc-chunking"),
-  SQS_EMBEDDINGS_QUEUE: z.string().default("doc-embeddings"),
+  // Cola de la ingesta asíncrona (extracción → troceado → embeddings).
+  SQS_INGEST_QUEUE: z.string().default("doc-ingest"),
   // Lambda que genera el PDF del reporte de stats.
   LAMBDA_STATS_REPORT: z.string().default("stats-report"),
 
