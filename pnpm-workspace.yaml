@@ -1,3 +1,6 @@
+allowBuilds:
+  '@nestjs/core': false
+  bcrypt: false
 ignoredBuiltDependencies:
   - better-sqlite3
   - esbuild

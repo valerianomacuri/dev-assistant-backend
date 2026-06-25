@@ -1,5 +1,4 @@
 import { createAgent } from "langchain";
-import { GraphRecursionError } from "@langchain/langgraph";
 import {
   AIMessage,
   HumanMessage,
@@ -200,39 +199,6 @@ export class AgentService {
           });
           subscriber.complete();
         } catch (error) {
-          if (error instanceof GraphRecursionError) {
-            const limitText =
-              `He alcanzado el límite de ${MAX_TOOL_CALLS} llamadas a herramientas por turno. ` +
-              `Para completar esta tarea, intenta dividirla en preguntas más específicas.`;
-            subscriber.next({ type: "token", data: limitText });
-            // Persistimos un par humano/ia coherente para no dejar tool calls
-            // sin resultado en el historial (rompería el reenvío a Claude).
-            await this.persistTurn(
-              await this.conversations
-                .getOwned(userId, conversationId)
-                .catch(() => null),
-              [humanMessage, new AIMessage(limitText)],
-              { model: this.modelName, latencyMs: Date.now() - turnStart },
-            );
-            const uniqueTools = [...new Set(toolsUsed)];
-            subscriber.next({
-              type: "done",
-              data: JSON.stringify({
-                toolsUsed: uniqueTools,
-                inputTokens,
-                outputTokens,
-                model: this.modelName,
-                costUsd: computeCostUsd(
-                  this.modelName,
-                  inputTokens,
-                  outputTokens,
-                ),
-                limitReached: true,
-              }),
-            });
-            subscriber.complete();
-            return;
-          }
           const message = error instanceof Error ? error.message : String(error);
           subscriber.next({ type: "error", data: message });
           subscriber.error(error);
