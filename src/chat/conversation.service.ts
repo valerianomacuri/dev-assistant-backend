@@ -66,7 +66,7 @@ export class ConversationService {
     private readonly runs: Repository<AgentRunEntity>,
     @InjectRepository(ToolExecutionEntity)
     private readonly toolExecs: Repository<ToolExecutionEntity>,
-  ) {}
+  ) { }
 
   /** Crea una conversación vacía para el usuario. */
   create(userId: string, title?: string): Promise<ConversationEntity> {
@@ -278,6 +278,7 @@ export class ConversationService {
 
     if (type === "ai") {
       const ai = message as AIMessage;
+      const kargs = (ai.additional_kwargs ?? {}) as Record<string, unknown>;
       const meta = (ai.response_metadata ?? {}) as Record<string, unknown>;
       const usage = ai.usage_metadata;
       const tools = ai.tool_calls;
@@ -290,7 +291,7 @@ export class ConversationService {
         invalidToolCalls: invalid && invalid.length > 0 ? invalid : null,
         model: (meta.model as string) ?? fallbackModel,
         modelProvider: MODEL_PROVIDER,
-        finishReason: (meta.stop_reason as string) ?? null,
+        finishReason: (kargs.stop_reason as string) ?? null,
         serviceTier: (meta.service_tier as string) ?? null,
         inputTokens: usage?.input_tokens ?? null,
         outputTokens: usage?.output_tokens ?? null,
