@@ -2,7 +2,7 @@ name: Deploy backend
 
 # Construye la imagen, la publica en ECR y actualiza el servicio ECS/Fargate.
 # Autenticación con AWS vía GitHub OIDC (sin llaves estáticas): el rol a asumir
-# lo crea el stack de CloudFormation `03-cicd.yaml`.
+# lo crea el stack de CloudFormation `02-cicd-backend.yaml` del repo dev-assistant-infra.
 #
 # Las migraciones de TypeORM se aplican solas al arrancar la tarea
 # (migrationsRun=true cuando NODE_ENV=production), no hay paso de migración aquí.
@@ -82,4 +82,5 @@ jobs:
           task-definition: ${{ steps.render.outputs.task-definition }}
           service: ${{ env.ECS_SERVICE }}
           cluster: ${{ env.ECS_CLUSTER }}
+          desired-count: 1
           wait-for-service-stability: true
