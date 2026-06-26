@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
+import { LoggerModule } from "nestjs-pino";
 import { AuthModule } from "./auth/auth.module";
 import { AwsModule } from "./aws/aws.module";
 import { AgentRunEntity } from "./chat/agent-run.entity";
@@ -9,6 +10,7 @@ import { ConversationEntity } from "./chat/conversation.entity";
 import { MessageEntity } from "./chat/message.entity";
 import { ToolExecutionEntity } from "./chat/tool-execution.entity";
 import { validateEnv, type AppEnv } from "./config/configuration";
+import { buildPinoParams } from "./config/logger.config";
 import { DocumentEntity } from "./documents/document.entity";
 import { DocumentsModule } from "./documents/documents.module";
 import { HealthModule } from "./health/health.module";
@@ -23,6 +25,11 @@ import { UsersModule } from "./users/users.module";
     ConfigModule.forRoot({
       isGlobal: true,
       validate: validateEnv,
+    }),
+    LoggerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService<AppEnv, true>) =>
+        buildPinoParams(config),
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],

@@ -1,12 +1,15 @@
 import "reflect-metadata";
-import { Logger, ValidationPipe } from "@nestjs/common";
+import { Logger as NestLogger, ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
+import { Logger } from "nestjs-pino";
 import { AppModule } from "./app.module";
 import type { AppEnv } from "./config/configuration";
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  app.useLogger(app.get(Logger));
+  app.flushLogs();
 
   const allowedOrigins =
     process.env.CORS_ORIGINS === "*"
@@ -30,7 +33,7 @@ async function bootstrap(): Promise<void> {
   const port = config.get("PORT", { infer: true });
 
   await app.listen(port);
-  Logger.log(
+  NestLogger.log(
     `DevAssistant API escuchando en http://localhost:${port}`,
     "Bootstrap",
   );
