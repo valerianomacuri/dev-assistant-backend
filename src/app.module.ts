@@ -11,6 +11,7 @@ import { ToolExecutionEntity } from "./chat/tool-execution.entity";
 import { validateEnv, type AppEnv } from "./config/configuration";
 import { DocumentEntity } from "./documents/document.entity";
 import { DocumentsModule } from "./documents/documents.module";
+import { HealthModule } from "./health/health.module";
 import { LlmModule } from "./llm/llm.module";
 import { RagModule } from "./rag/rag.module";
 import { StatsModule } from "./stats/stats.module";
@@ -25,20 +26,28 @@ import { UsersModule } from "./users/users.module";
     }),
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
-      useFactory: (config: ConfigService<AppEnv, true>) => ({
-        type: "postgres",
-        url: config.get("DATABASE_URL", { infer: true }),
-        entities: [
-          User,
-          DocumentEntity,
-          ConversationEntity,
-          AgentRunEntity,
-          MessageEntity,
-          ToolExecutionEntity,
-        ],
-        // synchronize solo en dev. En prod, usar migraciones.
-        synchronize: true,
-      }),
+      useFactory: (config: ConfigService<AppEnv, true>) => {
+        const isProd = config.get("NODE_ENV", { infer: true }) === "production";
+        return {
+          type: "postgres" as const,
+          url: config.get("DATABASE_URL", { infer: true }),
+          entities: [
+            User,
+            DocumentEntity,
+            ConversationEntity,
+            AgentRunEntity,
+            MessageEntity,
+            ToolExecutionEntity,
+          ],
+          // En local (dev) usamos synchronize por comodidad. En la nube
+          // (NODE_ENV=production) se desactiva y se aplican migraciones.
+          synchronize: !isProd,
+          // Migraciones compiladas (dist/*.js) o fuente (*.ts). En el contenedor
+          // de prod se ejecutan automáticamente al arrancar (migrationsRun).
+          migrations: [__dirname + "/database/migrations/*.{js,ts}"],
+          migrationsRun: isProd,
+        };
+      },
     }),
     AwsModule,
     LlmModule,
@@ -48,6 +57,7 @@ import { UsersModule } from "./users/users.module";
     DocumentsModule,
     ChatModule,
     StatsModule,
+    HealthModule,
   ],
 })
 export class AppModule {}

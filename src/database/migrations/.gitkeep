@@ -1,0 +1,14 @@
+# Migraciones TypeORM
+
+Genera la PRIMERA migración (esquema inicial) antes del primer deploy a la nube:
+
+    # Con un Postgres local vacío levantado (docker compose up -d db) y
+    # DATABASE_URL apuntando a él:
+    pnpm migration:generate src/database/migrations/Init
+
+Revisa el archivo generado, commitea, y despliega. En producción
+(NODE_ENV=production) las migraciones pendientes se aplican solas al arrancar
+el contenedor (migrationsRun=true en app.module.ts).
+
+Nota: la tabla `chunks` (pgvector) y la extensión `vector` NO se gestionan aquí;
+las crea LangChain (PGVectorStore) en el primer uso del RAG.

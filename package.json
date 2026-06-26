@@ -3,12 +3,17 @@
   "version": "0.1.0",
   "description": "API NestJS de asistente inteligente con RAG por usuario, S3 y streaming (Claude API)",
   "main": "dist/main.js",
+  "packageManager": "pnpm@11.9.0",
   "scripts": {
     "build": "nest build",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
     "typecheck": "tsc --noEmit",
+    "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
+    "migration:generate": "pnpm run typeorm migration:generate",
+    "migration:run": "pnpm run typeorm migration:run",
+    "migration:revert": "pnpm run typeorm migration:revert",
     "aws:setup": "node scripts/setup-aws.mjs"
   },
   "keywords": [
@@ -71,6 +76,7 @@
     "@types/passport-local": "^1.0.38",
     "@types/pdf-parse": "^1.1.4",
     "@types/pg": "^8.20.0",
+    "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }
 }

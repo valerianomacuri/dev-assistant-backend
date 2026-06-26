@@ -6,6 +6,11 @@ import { z } from "zod";
  * con @nestjs/config + validación tipada con Zod.
  */
 const envSchema = z.object({
+  // Gobierna el comportamiento de TypeORM: en "production" se desactiva
+  // `synchronize` y se corren migraciones; en local (default) se usa synchronize.
+  NODE_ENV: z
+    .enum(["development", "test", "production"])
+    .default("development"),
   PORT: z.coerce.number().default(3000),
 
   // === LLM / Embeddings ===
