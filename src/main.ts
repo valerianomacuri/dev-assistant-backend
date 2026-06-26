@@ -8,9 +8,14 @@ import type { AppEnv } from "./config/configuration";
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
 
+  const allowedOrigins =
+    process.env.CORS_ORIGINS === "*"
+      ? true
+      : process.env.CORS_ORIGINS?.split(",").map(o => o.trim());
+
   app.enableCors({
-    origin: process.env.CORS_ORIGINS?.split(",") ?? "*",
-    credentials: true,
+    origin: allowedOrigins,
+    credentials: false,
   });
 
   app.useGlobalPipes(

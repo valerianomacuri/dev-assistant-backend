@@ -61,7 +61,7 @@ const envSchema = z.object({
   // Orígenes permitidos para CORS (HTTP y WebSocket).
   CORS_ORIGINS: z
     .string()
-    .default("http://localhost:5173,http://localhost:5174"),
+    .default("*"),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
