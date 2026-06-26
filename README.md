@@ -57,7 +57,7 @@ cp .env.template .env   # completa ANTHROPIC_API_KEY, OPENAI_API_KEY y JWT_SECRE
 
 Variables relevantes (ver `.env.template` para la lista completa): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `JWT_SECRET`, `DATABASE_URL`, el bloque `S3_*` y el bloque `AWS_*`. Para AWS real deja los endpoints (`S3_ENDPOINT`, `AWS_ENDPOINT`) y las credenciales vacíos: la SDK resuelve el endpoint y toma las credenciales de la cadena por defecto (rol IAM / variables de entorno / perfil).
 
-> Las tablas las crea TypeORM con `synchronize: true` (solo dev): `users`, `documents`, y el modelo de chat `conversations` / `agent_runs` / `messages` / `tool_executions`. La tabla `chunks` (pgvector) se crea automáticamente al arrancar.
+> Las tablas las crea TypeORM con `migrationRun: true` (dev y prod): `users`, `documents`, y el modelo de chat `conversations` / `agent_runs` / `messages` / `tool_executions`. La tabla `chunks` (pgvector) se crea automáticamente al arrancar.
 
 ### Modelo de datos del chat
 

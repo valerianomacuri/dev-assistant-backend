@@ -54,10 +54,7 @@ Variables no sensibles (`NODE_ENV=production`, `PORT`, `CORS_ORIGINS`,
 
 ## Migraciones de base de datos
 
-En la nube **no** se usa `synchronize`. El comportamiento depende de `NODE_ENV`
-(ver [src/app.module.ts](../src/app.module.ts)):
-
-- **Local** (`NODE_ENV` ≠ `production`): `synchronize: true` (comodidad de dev).
+- **Local** (`NODE_ENV` ≠ `production`): `synchronize: false`.
 - **Nube** (`NODE_ENV=production`): `synchronize: false` + `migrationsRun: true`.
   Al arrancar el contenedor en Fargate se aplican las migraciones pendientes
   automáticamente (con `desiredCount: 1` no hay condiciones de carrera).

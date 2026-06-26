@@ -27,7 +27,6 @@ import { UsersModule } from "./users/users.module";
     TypeOrmModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService<AppEnv, true>) => {
-        const isProd = config.get("NODE_ENV", { infer: true }) === "production";
         return {
           type: "postgres" as const,
           url: config.get("DATABASE_URL", { infer: true }),
@@ -39,13 +38,11 @@ import { UsersModule } from "./users/users.module";
             MessageEntity,
             ToolExecutionEntity,
           ],
-          // En local (dev) usamos synchronize por comodidad. En la nube
-          // (NODE_ENV=production) se desactiva y se aplican migraciones.
-          synchronize: !isProd,
+          synchronize: false,
           // Migraciones compiladas (dist/*.js) o fuente (*.ts). En el contenedor
           // de prod se ejecutan automáticamente al arrancar (migrationsRun).
           migrations: [__dirname + "/database/migrations/*.{js,ts}"],
-          migrationsRun: isProd,
+          migrationsRun: true,
         };
       },
     }),
@@ -60,4 +57,4 @@ import { UsersModule } from "./users/users.module";
     HealthModule,
   ],
 })
-export class AppModule {}
+export class AppModule { }
