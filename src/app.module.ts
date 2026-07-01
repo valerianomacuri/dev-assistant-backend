@@ -37,6 +37,10 @@ import { UsersModule } from "./users/users.module";
         return {
           type: "postgres" as const,
           url: config.get("DATABASE_URL", { infer: true }),
+          ssl:
+            config.get("NODE_ENV", { infer: true }) === "production"
+              ? { rejectUnauthorized: false }
+              : false,
           entities: [
             User,
             DocumentEntity,
