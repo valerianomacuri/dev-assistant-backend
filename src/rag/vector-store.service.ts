@@ -35,12 +35,15 @@ export class VectorStoreService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(EMBEDDINGS) private readonly embeddings: Embeddings,
     private readonly config: ConfigService<AppEnv, true>,
-  ) {}
+  ) { }
 
   async onModuleInit(): Promise<void> {
     this.store = await PGVectorStore.initialize(this.embeddings, {
       postgresConnectionOptions: {
         connectionString: this.config.get("DATABASE_URL", { infer: true }),
+        ssl: this.config.get("NODE_ENV", { infer: true }) === "production"
+          ? { rejectUnauthorized: false }
+          : false,
       },
       tableName: TABLE_NAME,
       columns: {
